@@ -3,6 +3,7 @@ import time
 from typing import Union
 
 import numpy as np
+from numpy.typing import NDArray
 from pyscf import scf
 
 from shades.excitations import (
@@ -78,7 +79,6 @@ class GroundStateEstimator:
         logger.debug(f"Shadow samples: {n_samples:,}, bins: {n_k_estimators}, workers: {n_jobs}")
         logger.debug(f"Backend: {'Qulacs' if use_qualcs else 'Qiskit'}")
 
-        # Phase 1: Collect shadow samples
         logger.info("Collecting shadow samples...")
         t_start = time.perf_counter()
 
@@ -93,7 +93,6 @@ class GroundStateEstimator:
             f"Collected {n_samples:,} samples in {t_elapsed:.2f}s ({throughput:.0f} samples/s)"
         )
 
-        # Phase 2: Estimate HF overlap (c0)
         logger.info("Estimating HF reference overlap (c0)...")
         t_start = time.perf_counter()
 
@@ -102,7 +101,6 @@ class GroundStateEstimator:
         t_elapsed = time.perf_counter() - t_start
         logger.info(f"c0 = {c0:.6f} ({t_elapsed:.3f}s)")
 
-        # Phase 3: Estimate single excitations (c1)
         if calc_c1:
             n_singles = len(get_singles(self.mf))
             logger.info(f"Estimating {n_singles} single excitation amplitudes (c1)...")
@@ -118,7 +116,6 @@ class GroundStateEstimator:
         else:
             c1 = None
 
-        # Phase 4: Estimate double excitations (c2)
         n_doubles = len(get_doubles(self.mf))
         logger.info(f"Estimating {n_doubles} double excitation amplitudes (c2)...")
         t_start = time.perf_counter()
@@ -131,7 +128,6 @@ class GroundStateEstimator:
             f"Estimated {n_doubles} doubles in {t_elapsed:.2f}s ({avg_time * 1000:.1f} ms/exc)"
         )
 
-        # Compute correlation energy
         logger.debug("Computing correlation energy...")
         e_corr = compute_correlation_energy(self.mf, c0, c1, c2)
         e_total = self.E_hf + e_corr
@@ -151,37 +147,64 @@ class GroundStateEstimator:
         overlap = protocol.estimate_overlap(psi0)
         return overlap.real
 
-    def estimate_t1(self, protocol: ShadowProtocol) -> np.ndarray:
+    def estimate_t1(
+        self, protocol: ShadowProtocol
+    ) -> Union[NDArray[np.float64], tuple[NDArray[np.float64], NDArray[np.float64]]]:
         """Estimate single excitation amplitudes and return in tensor form.
 
         For RHF systems, only unique excitations are measured (alpha only),
         reducing the number of shadow measurements by a factor of 2.
 
         Returns:
-            SingleAmplitudes: Amplitudes in t1[i,a] format (nocc, nvirt)
+            For RHF: t1[i,a] array (nocc, nvirt)
+            For UHF: tuple of (t1_alpha[i,a], t1_beta[i,a]) arrays
         """
 
         def f(bitstring):
             nonlocal c
             c += 1
-            if (c + 1) % max(1, n_exc // 10) == 0:
-                progress = (c + 1) / n_exc * 100
-                logger.debug(f"Singles progress: {c + 1}/{n_exc} ({progress:.0f}%)")
+            if c % max(1, n_exc // 10) == 0:
+                progress = c / n_exc * 100
+                logger.debug(f"Singles progress: {c}/{n_exc} ({progress:.0f}%)")
             return protocol.estimate_overlap(bitstring).real
 
-        nocc, _ = self.mf.mol.nelec
         norb = self.mf.mol.nao
-        nvirt = norb - nocc
 
-        excitations = get_singles(self.mf)
+        if isinstance(self.mf, scf.hf.RHF):
+            nocc, _ = self.mf.mol.nelec
+            nvirt = norb - nocc
 
-        n_exc = len(excitations)
-        c = 0
+            singles = get_singles(self.mf)
 
-        t1 = singles_to_t1(excitations, f, nocc, nvirt)
-        return t1
+            n_exc = len(singles)
+            c = 0
 
-    def estimate_t2(self, protocol: ShadowProtocol) -> np.ndarray:
+            t1 = singles_to_t1(singles, f, nocc, nvirt)
+            return t1
+        
+        elif isinstance(self.mf, scf.uhf.UHF):
+            nocc_a, nocc_b = self.mf.mol.nelec
+            nvirt_a = norb - nocc_a
+            nvirt_b = norb - nocc_b
+
+            singles = get_singles(self.mf)
+            n_exc = len(singles)
+            c = 0
+
+            s_a = [ex for ex in singles if ex.spin == 'alpha']
+            s_b = [ex for ex in singles if ex.spin == 'beta']
+
+            t1_a = singles_to_t1(s_a, f, nocc_a, nvirt_a)
+            t1_b = singles_to_t1(s_b, f, nocc_b, nvirt_b)
+
+            return t1_a, t1_b
+        
+        else:
+            raise RuntimeError()
+
+    def estimate_t2(
+            self, protocol: ShadowProtocol
+        ) -> Union[NDArray[np.float64], tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]]:
         """Estimate double excitation amplitudes and return in tensor form.
 
         Returns:
@@ -191,14 +214,15 @@ class GroundStateEstimator:
         def f(bitstring):
             nonlocal c
             c += 1
-            if (c + 1) % max(1, n_exc // 10) == 0:
-                progress = (c + 1) / n_exc * 100
-                logger.debug(f"Doubles progress: {c + 1}/{n_exc} ({progress:.0f}%)")
+            if c % max(1, n_exc // 10) == 0:
+                progress = c / n_exc * 100
+                logger.debug(f"Doubles progress: {c}/{n_exc} ({progress:.0f}%)")
             return protocol.estimate_overlap(bitstring).real
+
+        norb = self.mf.mol.nao
 
         if isinstance(self.mf, scf.hf.RHF):
             nocc, _ = self.mf.mol.nelec
-            norb = self.mf.mol.nao
             nvirt = norb - nocc
 
             doubles = get_doubles(self.mf)
@@ -209,11 +233,29 @@ class GroundStateEstimator:
                 doubles, f, nocc, nvirt, spin_case="alpha-beta", symmetry_restricted=True
             )
 
+            return t2
+
         elif isinstance(self.mf, scf.uhf.UHF):
-            raise NotImplementedError()
+            nocc_a, nocc_b = self.mf.mol.nelec
+            nvirt_a = norb - nocc_a
+            nvirt_b = norb - nocc_b
 
-        return t2
+            doubles = get_doubles(self.mf)
+            n_exc = len(doubles)
+            c = 0
 
+            s_aa = [ex for ex in doubles if ex.spin_case == 'alpha-alpha']
+            s_bb = [ex for ex in doubles if ex.spin_case == 'beta-beta']
+            s_ab = [ex for ex in doubles if ex.spin_case == 'alpha-beta']
+
+            t2_aa = doubles_to_t2(s_aa, f, nocc_a, nvirt_a, spin_case='alpha-alpha')
+            t2_bb = doubles_to_t2(s_bb, f, nocc_b, nvirt_b, spin_case='beta-beta')
+            t2_ab = doubles_to_t2(s_ab, f, (nocc_a, nocc_b), (nvirt_a, nvirt_b), spin_case='alpha-beta')
+
+            return t2_aa, t2_bb, t2_ab
+        
+        else:
+            raise RuntimeError()
 
 if __name__ == "__main__":
     pass
