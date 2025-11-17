@@ -34,7 +34,7 @@ class FCISolver(GroundStateSolver):
         """
 
         n_alpha, n_beta = self.mf.mol.nelec
-        norb = self.mf.mo_coeff.shape[0]
+        norb = self.mf.mol.nao
         n_qubits = 2 * norb
 
         full_statevector = np.zeros(2**n_qubits, dtype=complex)
