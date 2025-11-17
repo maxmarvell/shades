@@ -5,7 +5,7 @@ import numpy as np
 from qiskit.quantum_info import Statevector
 from pyscf import scf, fci, ci
 
-from shades.excitations import SinglesSector, get_hf_reference
+from shades.excitations import get_hf_reference
 
 class FCISolver(GroundStateSolver):
 
