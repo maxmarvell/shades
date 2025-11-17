@@ -1,11 +1,10 @@
 from shades.solvers.base import GroundStateSolver
-from shades.utils import get_single_excitations
 from typing import Tuple, Union, Optional
 import numpy as np
 from qiskit.quantum_info import Statevector
 from pyscf import scf, fci, ci
 
-from shades.excitations import get_hf_reference
+from shades.excitations import get_hf_reference, get_doubles, get_singles, singles_to_t1, doubles_to_t2
 
 class FCISolver(GroundStateSolver):
 
@@ -79,8 +78,13 @@ class FCISolver(GroundStateSolver):
         return self.state[ref.to_int()].real
 
     def _get_singles(self) -> np.ndarray:
-        singles = SinglesSector(self.mf)
-        t1 = singles.excitations_to_t1(lambda b: self.state[b.to_int()].real)
+
+        nocc, _ = self.mf.mol.nelec
+        norb = self.mf.mol.nao
+        nvirt = norb - nocc
+
+        singles = get_singles(self.mf)
+        t1 = singles_to_t1(singles, lambda b: self.state[b.to_int()].real, nocc, norb)
         return t1
 
     def estimate(
