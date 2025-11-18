@@ -139,15 +139,20 @@ def get_doubles(
     mf: Union[scf.hf.RHF, scf.uhf.UHF],
     *,
     spin_cases: Optional[List[DoubleSpinCase]] = None,
-    symmetry_restricted: bool = False,
+    symmetry_restricted: Optional[bool] = None,
     mp2_screening: bool = False,  # need to implement this
 ) -> List[DoubleExcitation]:
+    
     if spin_cases is None:  # if none just assume default
         if isinstance(mf, scf.hf.RHF):
             spin_cases = ["alpha-beta"]
-            symmetry_restricted = True
         else:
             spin_cases = ["alpha-alpha", "beta-beta", "alpha-beta"]
+
+    if symmetry_restricted is None:
+        if isinstance(mf, scf.hf.RHF):
+            symmetry_restricted = True
+        else:
             symmetry_restricted = False
 
     excitations = []
@@ -169,13 +174,13 @@ def get_doubles(
     # alpha-beta mixed excitations
     if "alpha-beta" in spin_cases:
         for idx_i, i in enumerate(occupied_alpha):
-            idx_i = idx_i + 1 if symmetry_restricted else 0
+            idx_i = idx_i + 1 if symmetry_restricted and isinstance(mf, scf.hf.RHF) else 0
             for j in occupied_beta[idx_i:]:
-                if i + norb == j and symmetry_restricted:
+                if i + norb == j and symmetry_restricted and isinstance(mf, scf.hf.RHF):
                     continue  # not allowed
                 for a in virtual_alpha:
                     for b in virtual_beta:
-                        if a + norb == b and symmetry_restricted:
+                        if a + norb == b and symmetry_restricted and isinstance(mf, scf.hf.RHF):
                             continue  # not allowed
                         excited_state = reference.copy()
                         excited_state[[i, j, a, b]] = [False, False, True, True]
@@ -193,7 +198,7 @@ def get_doubles(
                         )
 
         # get double excitations from same orbital
-        if symmetry_restricted:
+        if symmetry_restricted and isinstance(mf, scf.hf.RHF):
             for i in occupied_alpha:
                 for a in virtual_alpha:
                     excited_state = reference.copy()
@@ -213,9 +218,13 @@ def get_doubles(
 
     if "alpha-alpha" in spin_cases:
         for idx_i, i in enumerate(occupied_alpha):
-            for j in occupied_alpha[idx_i + 1 :]:
+            idx_i = idx_i + 1 if symmetry_restricted else 0
+            for j in occupied_alpha[idx_i:]:
+                if i == j: continue
                 for idx_a, a in enumerate(virtual_alpha):
-                    for b in virtual_alpha[idx_a + 1 :]:
+                    idx_a = idx_a + 1 if symmetry_restricted else 0
+                    for b in virtual_alpha[idx_a:]:
+                        if a == b: continue
                         excited_state = reference.copy()
                         excited_state[[i, j, a, b]] = [False, False, True, True]
                         excitations.append(
@@ -276,12 +285,14 @@ def doubles_to_t2(
     for ex in excitations:
         c2[ex.occ1, ex.virt1, ex.occ2, ex.virt2] = amplitude_fn(ex.bitstring)
 
-    if spin_case in ["alpha-alpha", "beta-beta"]:
+    if spin_case in ["alpha-alpha", "beta-beta"] and symmetry_restricted:
         for ex in excitations:
             val = c2[ex.occ1, ex.virt1, ex.occ2, ex.virt2]
-            c2[ex.occ2, ex.virt1, ex.occ1, ex.virt2] = -val
-            c2[ex.occ1, ex.virt2, ex.occ2, ex.virt1] = -val
+            c2[ex.occ2, ex.virt1, ex.occ1, ex.virt2] = - val
+            c2[ex.occ1, ex.virt2, ex.occ2, ex.virt1] = - val
             c2[ex.occ2, ex.virt2, ex.occ1, ex.virt1] = val
+
+        c2 = - c2
 
     if spin_case in ["alpha-beta"] and symmetry_restricted:
         for ex in excitations:
