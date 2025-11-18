@@ -368,21 +368,21 @@ def compute_correlation_energy(
     elif isinstance(mf, scf.uhf.UHF): 
 
         nocc_a, nocc_b = mf.mol.nelec
+        mo_a, mo_b = mf.mo_coeff
         
         if c1 is not None:
 
             fock_a, fock_b = mf.get_fock()
             c1_a, c1_b = c1
 
-            fock_mo = mf.mo_coeff.T @ fock_a @ mf.mo_coeff
-            f_ov = fock_mo[:nocc, nocc:]
+            fock_mo = mo_a.T @ fock_a @ mo_a
+            f_ov = fock_mo[:nocc_a, nocc_a:]
             e_singles += np.sum(f_ov * c1_a) / c0
 
-            fock_mo = mf.mo_coeff.T @ fock_b @ mf.mo_coeff
-            f_ov = fock_mo[:nocc, nocc:]
+            fock_mo = mo_b.T @ fock_b @ mo_b
+            f_ov = fock_mo[:nocc_b, nocc_b:]
             e_singles += np.sum(f_ov * c1_b) / c0
 
-        mo_a, mo_b = mf.mo_coeff
         eri_ao = mf.mol.intor("int2e")
 
         eri_aaaa = ao2mo.general(
@@ -414,12 +414,12 @@ def compute_correlation_energy(
         e_aa = (
             np.einsum("ijab,iabj->", c2_aa, g_ovvo_aa) 
             - np.einsum("ijab,ibaj->", c2_aa, g_ovvo_aa)
-        )
+        ) / 4
         
         e_bb = (
             np.einsum("ijab,iabj->", c2_bb, g_ovvo_bb)
             - np.einsum("ijab,ibaj->", c2_bb, g_ovvo_bb)
-        )
+        ) / 4
 
         e_ab = np.einsum("ijab,iabj->", c2_ab, g_ovvo_ab)
         
@@ -431,4 +431,23 @@ def compute_correlation_energy(
     return e_singles + e_doubles
 
 if __name__ == "__main__":
-    pass
+    
+    from shades.utils import make_hydrogen_chain
+    from pyscf import gto, scf
+
+    atom = make_hydrogen_chain(4, bond_length=3.5)
+    mol = gto.Mole()
+    mol.build(atom=atom, basis="sto-3g", verbose=0, spin=0)
+    mf = scf.UHF(mol)
+    mf.run()
+
+    from shades.solvers import FCISolver
+    fci = FCISolver(mf)
+
+    from shades.estimators import TrivialEstimator
+
+    estimator = TrivialEstimator(mf, fci)
+
+    t2_aa, t2_bb, t2_ab = estimator.estimate_c2()
+
+    
