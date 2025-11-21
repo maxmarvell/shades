@@ -4,8 +4,6 @@ import numpy as np
 from qiskit.quantum_info import Statevector
 from pyscf import scf, fci, ci
 
-from shades.excitations import get_hf_reference, get_doubles, get_singles, singles_to_t1, doubles_to_t2
-
 class FCISolver(GroundStateSolver):
 
     civec: Optional[np.ndarray]
@@ -14,7 +12,7 @@ class FCISolver(GroundStateSolver):
         super().__init__(mf)
         self.civec = None
 
-    def solve(self) -> Tuple[np.float64, np.ndarray]:
+    def solve(self) -> Tuple[Statevector, float]:
         self.energy, self.civec = fci.FCI(self.mf).kernel()
         self.state = self._civec_to_statevector(self.civec)
         return self.state, self.energy
@@ -66,43 +64,6 @@ class FCISolver(GroundStateSolver):
                     full_statevector[qubit_index] = ci_coeff
 
         return Statevector(full_statevector)
-
-    def get_configuration_interaction(self):
-        if not self.state: self.solve()
-        c0 = self._get_reference()
-        c1 = self._get_singles()
-        return self.energy, c0, c1, None
-
-    def _get_reference(self) -> np.float64:
-        ref = get_hf_reference(self.mf)
-        return self.state[ref.to_int()].real
-
-    def _get_singles(self) -> np.ndarray:
-
-        nocc, _ = self.mf.mol.nelec
-        norb = self.mf.mol.nao
-        nvirt = norb - nocc
-
-        singles = get_singles(self.mf)
-        t1 = singles_to_t1(singles, lambda b: self.state[b.to_int()].real, nocc, norb)
-        return t1
-
-    def estimate(
-        self, mf: Union[scf.hf.RHF, scf.uhf.UHF]
-    ) -> tuple[np.float64, np.float64, np.ndarray, np.ndarray]:
-        """Estimate ground state properties for a given mean-field object.
-
-        This method can be used as an estimator_fn for Brueckner optimization.
-
-        Args:
-            mf: Mean-field object (RHF or UHF)
-
-        Returns:
-            Tuple of (energy, c0, c1, c2) where c2 is currently None
-        """
-        self.mf = mf
-        self.solve()
-        return self.get_configuration_interaction()
 
 if __name__ == "__main__":
 
