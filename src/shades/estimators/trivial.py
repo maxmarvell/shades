@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 
 class TrivialEstimator(AbstractEstimator):
 
-    def __init__(self, mf: Union[scf.hf.RHF, scf.uhf.UHF], solver: GroundStateSolver):
-        super().__init__(mf, solver)
+    def __init__(self, mf: Union[scf.hf.RHF, scf.uhf.UHF], solver: GroundStateSolver, *, verbose: int = 0):
+        super().__init__(mf, solver, verbose)
 
     def estimate_overlap(self, a: Bitstring) -> np.float64:
         idx = a.to_int()  
@@ -23,9 +23,9 @@ if __name__ == "__main__":
     from shades.utils import make_hydrogen_chain
     from pyscf import gto, scf
 
-    atom = make_hydrogen_chain(4, bond_length=3.5)
+    atom = make_hydrogen_chain(7, bond_length=3.5)
     mol = gto.Mole()
-    mol.build(atom=atom, basis="sto-3g", verbose=0, spin=0)
+    mol.build(atom=atom, basis="sto-3g", verbose=0, spin=1)
     mf = scf.UHF(mol)
     mf.run()
 

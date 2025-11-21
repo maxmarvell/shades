@@ -26,6 +26,12 @@ class AbstractEstimator(ABC):
         self.mf = mf
         self.verbose = verbose
 
+    def update_reference(self, new_mf: Union[scf.hf.RHF, scf.uhf.UHF]):
+        self.mf = new_mf
+        self.solver.mf = new_mf  # Update solver's mf reference for Brueckner iterations
+        self.E_hf = new_mf.e_tot
+        self.trial, self.E_exact = self.solver.solve()
+
     def run(self, *, calc_c1: bool = False):
 
         logger.info("Estimating HF reference overlap (c0)...")
@@ -84,7 +90,7 @@ class AbstractEstimator(ABC):
     def estimate_c0(self)-> np.float64:
         psi0 = get_hf_reference(self.mf)
         overlap = self.estimate_overlap(psi0)
-        return overlap
+        return np.abs(overlap)
 
     def estimate_c1(self):
 
