@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 from typing import Tuple, Union, Optional
-from qiskit_nature.second_q.operators import FermionicOp
 from qiskit.quantum_info import Statevector
 from pyscf import scf
 import numpy as np
