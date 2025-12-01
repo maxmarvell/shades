@@ -59,7 +59,7 @@ class ShadowEstimator(AbstractEstimator):
         self.protocol = ShadowProtocol(
             self.trial, n_jobs=n_jobs, use_qulacs=use_qulacs, verbose=self.verbose - 1
         )
-        self.protocol.collect_samples(n_samples, n_k_estimators, prediction="overlap")
+        self.protocol.collect_samples_for_overlaps(n_samples, n_k_estimators, prediction="overlap")
 
     def estimate_overlap(self, a: Bitstring) -> np.float64:
         if not self.protocol:

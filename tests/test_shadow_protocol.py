@@ -12,7 +12,6 @@ import stim
 from qiskit.quantum_info import Statevector
 from shades.shadows import (
     CliffordGroup,
-    ClassicalSnapshot,
     ClassicalShadow,
     ShadowProtocol,
 )
@@ -339,7 +338,7 @@ class TestOverlapCalculation:
 
         # Test overlap with |1⟩ (same state)
         target_1 = Bitstring([True])
-        overlap_1 = protocol.estimate_overlap(target_1)
+        overlap_1 = protocol.estimate_overlap(target_1).real
         expected_1 = 1.0
 
         # Allow tolerance for statistical sampling
@@ -393,18 +392,18 @@ class TestOverlapCalculation:
         Expected: ⟨010|101⟩ = 0 (orthogonal)
         """
         state = Statevector.from_label("101")
-        protocol = ShadowProtocol(state, ensemble_type='clifford', use_qulacs=True)
+        protocol = ShadowProtocol(state, verbose=0)
 
-        protocol.collect_samples(5000, 10, prediction='overlap')
+        protocol.collect_samples_for_overlaps(5000, 10)
 
         # Test overlap with |101⟩ (same state)
         target_101 = Bitstring([True, False, True])
-        overlap_101 = protocol.estimate_overlap(target_101)
+        overlap_101 = protocol.estimate_overlap(target_101).real
         expected_101 = 1.0
 
         # Test overlap with |010⟩ (orthogonal)
         target_010 = Bitstring([False, True, False])
-        overlap_010 = protocol.estimate_overlap(target_010)
+        overlap_010 = protocol.estimate_overlap(target_010).real
         expected_010 = 0.0
 
         assert abs(abs(overlap_101) - expected_101) < 0.3, \

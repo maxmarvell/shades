@@ -62,61 +62,119 @@ python benchmarks/benchmark_shadow_scaling.py
 
 ### Core Components
 
-**1. Molecular Hamiltonian ([hamiltonian.py](src/shades/hamiltonian.py))**
-- Bridge between PySCF quantum chemistry and shadow tomography
-- Stores one-electron (h1e) and two-electron (h2e) integrals in MO basis
-- Generates single/double excitations with RHF symmetry optimization
+**1. Excitation Generation ([excitations.py](src/shades/excitations.py))**
+- Generates single and double excitations from PySCF mean-field objects
+- Creates bitstring representations for each excitation
+- Converts excitation lists to amplitude tensors (t1, t2)
 - **Key convention**: Spin-orbital ordering is [α₀, α₁, ..., α_{n-1}, β₀, β₁, ..., β_{n-1}]
 - **Bitstring convention**: Little-endian (bit i from right = orbital i)
 - For RHF systems: Exploits spin symmetry to reduce unique excitations by ~40%
+- Helper functions: `get_singles()`, `get_doubles()`, `get_hf_reference()`
 
 **2. Shadow Protocol ([shadows.py](src/shades/shadows.py))**
 - Implements classical shadow tomography using Clifford group sampling
-- Collects measurement snapshots: (bitstring, Clifford tableau) pairs
+- `ClassicalShadow`: Stores snapshots as lists of stim.Tableau objects
+- `ShadowProtocol`: Orchestrates shadow collection and overlap estimation
+  - Initialize with `ShadowProtocol(state, verbose=0)`
+  - Call `collect_samples_for_overlaps(n_samples, n_estimators)` to collect shadows from tau state
+  - Call `estimate_overlap(bitstring, n_jobs=1)` to estimate overlaps using median-of-means
 - Computes overlaps via stabilizer formalism and Gaussian elimination
-- **Performance**: Supports both Qiskit and Qulacs backends; Qulacs is ~5-10x faster
-- Parallelization: `n_jobs > 1` for multi-core sampling and estimation
+- **Performance**: Uses Qulacs backend for ~5-10x faster state evolution than Qiskit
+- Parallelization: `n_jobs > 1` in `estimate_overlap()` for multi-core overlap computation
 - **Critical**: Uses median-of-means (K estimators) for robust statistical estimation
 
 **3. Ground State Solvers ([solvers/](src/shades/solvers/))**
-- Base class: `GroundStateSolver` (abstract interface)
+- Base class: `GroundStateSolver` (abstract interface in [base.py](src/shades/solvers/base.py))
 - `FCISolver`: PySCF Full CI solver for exact ground states
 - `VQESolver`: Variational Quantum Eigensolver with UCC ansatz
 - All solvers convert final states to Qiskit `Statevector` format
+- Returns tuple: (statevector, exact_energy)
 
-**4. Ground State Estimator ([estimator.py](src/shades/estimator.py))**
-- Main entry point for shadow-based energy estimation
-- Workflow:
-  1. Collect shadow samples from trial state
-  2. Estimate HF reference overlap (c0)
-  3. Estimate single excitation amplitudes (c1) - optional
-  4. Estimate double excitation amplitudes (c2)
-  5. Contract amplitudes with Fock matrix and ERIs to compute E_corr
-- Returns: (total_energy, c0, c1, c2)
+**4. Estimators ([estimators/](src/shades/estimators/))**
+- Base class: `AbstractEstimator` in [base.py](src/shades/estimators/base.py)
+  - Defines workflow: estimate_c0() → estimate_c1() → estimate_c2() → compute_correlation_energy()
+  - Main method: `run(calc_c1=False)` returns (total_energy, c0, c1, c2)
+- `ShadowEstimator`: Uses classical shadow tomography for overlap estimation
+  - Initialize with `ShadowEstimator(mf, solver, verbose=0)`
+  - Method: `run(n_samples, n_k_estimators, n_jobs=1, use_qulacs=True, calc_c1=False)`
+  - Collects shadow samples once via internal `ShadowProtocol`, reuses for all excitation overlaps
+  - `n_jobs` parameter controls parallelization during overlap estimation
+  - `use_qulacs` currently always uses Qulacs for sampling (parameter retained for compatibility)
+- `TrivialEstimator`: Direct state vector access for exact overlaps (no shadows, for testing)
+  - Method: `run(calc_c1=False)`
 
-**5. Utilities ([utils.py](src/shades/utils.py))**
-- `Bitstring`: Custom bitstring class with stabilizer conversion
-- `SingleExcitation`, `DoubleExcitation`: Dataclasses for excitations
-- `SingleAmplitudes`, `DoubleAmplitudes`: Amplitude tensor management
-- Gaussian elimination for stabilizer phase computations
-- Helper functions for HF reference states and excitation generation
+**5. Brueckner Orbitals ([brueckner.py](src/shades/brueckner.py))**
+- Implements Brueckner orbital transformations to minimize single excitations
+- `brueckner_cycle(mf, estimator, ...)`: Iteratively rotates orbitals to drive t1 amplitudes to zero
+- `rotate_mo_coeffs()`: Applies orbital rotations using exponential or Taylor expansion
+- `rotate_mf()`: Creates new mean-field object with rotated molecular orbitals
+- Supports both RHF and UHF references with optional DIIS convergence acceleration
+
+**6. Utilities ([utils.py](src/shades/utils.py))**
+- `Bitstring`: Custom bitstring class with stabilizer conversion and endianness support
+- `gaussian_elimination()`: Computes overlap phases via stabilizer formalism
+- `compute_correlation_energy()`: Contracts amplitudes with Fock matrix and ERIs
+- `make_hydrogen_chain()`: Helper to construct hydrogen chain geometries
+- Helper functions for stabilizer canonicalization and phase computation
 
 ### Data Flow
 
 ```
-PySCF MeanField (mf)
+PySCF MeanField (mf: scf.RHF or scf.UHF)
     ↓
-MolecularHamiltonian.from_pyscf(mf)
+GroundStateSolver(mf).solve() → (trial Statevector, exact_energy)
     ↓
-GroundStateSolver.solve() → trial Statevector
+AbstractEstimator(mf, solver) [ShadowEstimator or TrivialEstimator]
     ↓
-ShadowProtocol(trial).collect_samples(N, K)
+estimator.run(n_samples, n_k_estimators, ...)
+    │
+    ├─ [Shadow only] Create ShadowProtocol(trial_state, verbose)
+    │       ↓
+    │   collect_samples_for_overlaps(n_samples, n_k_estimators)
+    │       ↓
+    │   Creates K ClassicalShadow estimators with n_samples/K each
+    │
+    ├─ estimate_c0() → |⟨HF|ψ⟩|
+    │       ↓
+    │   get_hf_reference(mf) → bitstring
+    │   estimate_overlap(bitstring) → c0
+    │
+    ├─ estimate_c1() → t1 amplitudes (optional)
+    │       ↓
+    │   get_singles(mf) → List[SingleExcitation]
+    │   For each excitation: estimate_overlap(bitstring)
+    │   singles_to_t1() → t1 tensor
+    │
+    ├─ estimate_c2() → t2 amplitudes
+    │       ↓
+    │   get_doubles(mf) → List[DoubleExcitation]
+    │   For each excitation: estimate_overlap(bitstring)
+    │   doubles_to_t2() → t2 tensor
+    │
+    └─ compute_correlation_energy(mf, c0, c1, c2) → E_corr
+            ↓
+        E_total = E_HF + E_corr
+        return (E_total, c0, c1, c2)
+```
+
+### Brueckner Cycle Workflow (Optional)
+
+```
+Initial MeanField (mf₀)
     ↓
-GroundStateEstimator.estimate_ground_state()
-    ├─ estimate_reference_determinant() → c0
-    ├─ estimate_first_order_interactions() → c1
-    ├─ estimate_second_order_interaction() → c2
-    └─ compute_correlation_energy(c0, c1, c2) → E_total
+for iteration in range(max_iter):
+    ↓
+    estimator.update_reference(mfᵢ)
+    ↓
+    Estimator.run(calc_c1=True) → (E, c0, c1, c2)
+    ↓
+    if ||c1|| < threshold: converged ✓
+    ↓
+    rotate_mf(mfᵢ, c1, ...) → mfᵢ₊₁
+    ↓
+    mfᵢ = mfᵢ₊₁
+
+Final: Brueckner orbitals where c1 ≈ 0
 ```
 
 ## Key Implementation Details
@@ -133,24 +191,27 @@ For restricted Hartree-Fock systems, the code automatically:
 - Bitstrings use little-endian convention matching PySCF occupation strings
 
 ### Shadow Protocol Performance
-- **Critical**: Set `use_qulacs=True` for medium/large molecules (>6 qubits)
-- Qulacs provides 5-10x speedup over Qiskit for state evolution
-- For parallel sampling: set `n_jobs > 1` (works best with Qiskit backend for small systems)
-- Verbosity levels: 0=silent, 1=basic progress, 2=detailed timing, 3=debug
+- **Critical**: Qulacs is used for state evolution during shadow sampling (5-10x faster than Qiskit)
+- Parallelization: Set `n_jobs > 1` in `estimator.run()` to parallelize overlap estimation across K estimators
+- The `use_qulacs` parameter in `ShadowEstimator.run()` is currently always True
+- Verbosity levels: 0=WARNING, 1=INFO, 2+=DEBUG
 
 ### Amplitude Tensor Structure
-- `SingleAmplitudes`: Shape (nocc, nvirt) - occupied → virtual transitions
-- `DoubleAmplitudes`: Shape (nocc, nocc, nvirt, nvirt) - antisymmetrized
-- For RHF: Amplitudes are automatically expanded to both spin channels when needed
+- **t1 tensors** (single excitations):
+  - RHF: Shape (nocc, nvirt) - alpha electrons only
+  - UHF: Tuple of (t1_alpha, t1_beta), shapes (nocc_a, nvirt_a) and (nocc_b, nvirt_b)
+- **t2 tensors** (double excitations):
+  - RHF: Shape (nocc, nocc, nvirt, nvirt) - antisymmetrized alpha-beta amplitudes
+  - UHF: Tuple of (t2_aa, t2_bb, t2_ab) for all three spin cases
+- For RHF: Amplitudes are automatically expanded to both spin channels in energy computation
 
 ## Common Workflows
 
-### Running Ground State Estimation
+### Running Shadow-Based Ground State Estimation
 ```python
 from pyscf import gto, scf
-from shades.hamiltonian import MolecularHamiltonian
 from shades.solvers import FCISolver
-from shades.estimator import GroundStateEstimator
+from shades.estimators import ShadowEstimator
 
 # Setup molecule
 mol = gto.Mole()
@@ -160,13 +221,69 @@ mf = scf.RHF(mol).run()
 # Get exact FCI ground state as trial state
 solver = FCISolver(mf)
 
-# Estimate via shadows
-estimator = GroundStateEstimator(mf, solver, verbose=2)
-energy, c0, c1, c2 = estimator.estimate_ground_state(
+# Create shadow estimator
+estimator = ShadowEstimator(mf, solver, verbose=1)
+
+# Estimate energy via shadow tomography
+energy, c0, c1, c2 = estimator.run(
     n_samples=1000,
     n_k_estimators=10,
     n_jobs=4,
-    use_qualcs=True
+    use_qulacs=True,
+    calc_c1=False  # Set True to include singles
+)
+
+print(f"Shadow Energy: {energy:.8f} Ha")
+print(f"Exact FCI Energy: {estimator.E_exact:.8f} Ha")
+print(f"Error: {energy - estimator.E_exact:.2e} Ha")
+```
+
+### Running Exact (Non-Shadow) Estimation
+```python
+from pyscf import gto, scf
+from shades.solvers import FCISolver
+from shades.estimators import TrivialEstimator
+
+mol = gto.Mole()
+mol.build(atom='H 0 0 0; H 0 0 0.74', basis='sto-3g')
+mf = scf.RHF(mol).run()
+
+solver = FCISolver(mf)
+estimator = TrivialEstimator(mf, solver, verbose=1)
+
+# Direct overlap computation (no shadow samples needed)
+energy, c0, c1, c2 = estimator.run(calc_c1=True)
+```
+
+### Running Brueckner Orbital Optimization
+```python
+from pyscf import gto, scf
+from shades.solvers import FCISolver
+from shades.estimators import ShadowEstimator
+from shades.brueckner import brueckner_cycle
+
+mol = gto.Mole()
+mol.build(atom='H 0 0 0; H 0 0 0.74', basis='sto-3g')
+mf = scf.RHF(mol).run()
+
+solver = FCISolver(mf)
+estimator = ShadowEstimator(mf, solver, verbose=1)
+
+# Define convergence callback
+def converged(E, c0, norm):
+    return norm < 1e-6
+
+# Run Brueckner cycle to minimize singles
+# Note: n_samples/n_k_estimators are passed to estimator.run() internally
+brueckner_cycle(
+    mf,
+    estimator,
+    max_iter=10,
+    damping=0.8,
+    use_diis=False,
+    callback_fn=converged,
+    verbose=2,
+    method="taylor"
 )
 ```
 
@@ -185,14 +302,29 @@ python benchmarks/benchmark_shadow_scaling.py --n-samples 100 500 1000 2000
 ## File Organization
 
 - `src/shades/`: Main package code
-  - `hamiltonian.py`: Molecular Hamiltonian and excitation generation
-  - `shadows.py`: Shadow protocol and overlap estimation
-  - `estimator.py`: Main ground state estimator
-  - `utils.py`: Bitstrings, excitations, amplitude tensors
+  - `excitations.py`: Excitation generation and amplitude tensor conversion
+  - `shadows.py`: Shadow protocol, classical snapshots, and overlap estimation
+  - `brueckner.py`: Brueckner orbital transformations and cycle optimization
+  - `utils.py`: Bitstring class, stabilizer operations, helper functions
+  - `stabilizer.py`: Stabilizer-related utilities
+  - `estimators/`: Estimator implementations
+    - `base.py`: Abstract estimator with shared workflow
+    - `shadow.py`: Shadow tomography-based estimator
+    - `trivial.py`: Exact overlap estimator (for testing/validation)
   - `solvers/`: Ground state solver implementations
+    - `base.py`: Abstract solver interface
+    - `fci.py`: PySCF Full CI solver
+    - `vqe.py`: Variational Quantum Eigensolver
 - `tests/`: Unit tests (pytest)
+  - `test_shadow_protocol.py`: Shadow protocol and overlap estimation tests
+  - `test_bitstring.py`: Bitstring class tests
+  - `test_stabilizer.py`: Stabilizer formalism tests
 - `benchmarks/`: Performance benchmarks (pytest-benchmark)
-- `scripts/`: Research scripts (convergence analysis, H2 stretching, etc.)
+- `scripts/`: Research scripts
+  - `convergence.py`: Shadow sampling convergence analysis
+  - `brueckner.py`: Brueckner orbital optimization demonstrations
+  - `h2_stretching.py`: H₂ potential energy surface
+  - `sample_space.py`: Sample space exploration
 - `results/`: Output directory for computed results
 
 ## Important Conventions
@@ -201,19 +333,22 @@ python benchmarks/benchmark_shadow_scaling.py --n-samples 100 500 1000 2000
 All energies are in **Hartrees** (atomic units).
 
 ### Integral Storage
-- h1e: One-electron integrals in MO basis, shape (norb, norb)
-- h2e: Two-electron integrals from `ao2mo.full()`, flattened 4D array
-- Both use physicist's notation: (pq|rs)
+- One-electron integrals: Retrieved from `mf.get_hcore()` in MO basis
+- Two-electron integrals: Retrieved from `ao2mo.full()` in MO basis
+- Both use physicist's notation: ⟨pq|rs⟩
+- Integrals are accessed directly from PySCF mean-field objects, not stored separately
 
 ### State Representation
-- Quantum states: Qiskit `Statevector` objects
-- Classical snapshots: `(Bitstring, stim.Tableau)` pairs
-- Trial states MUST be in Jordan-Wigner encoding for current implementation
+- Quantum states: Qiskit `Statevector` objects (from solvers)
+- Classical snapshots: Lists of `stim.Tableau` objects within `ClassicalShadow`
+- Bitstrings: Custom `Bitstring` class with little-endian convention by default
+- Trial states use Jordan-Wigner encoding (qubit i ↔ spin-orbital i)
 
 ### Parallelization Notes
-- Shadow sampling: Best with Qulacs backend, serial mode (n_jobs=1) for large systems
-- For small systems (<8 qubits): Qiskit with n_jobs>1 can parallelize sampling
-- Overlap estimation: Always parallelizes efficiently across K estimators when n_jobs>1
+- Shadow sampling: Uses Qulacs backend (currently not parallelized during sampling)
+- Overlap estimation: Parallelizes efficiently across K estimators when `n_jobs > 1`
+- The `n_jobs` parameter in `estimator.run()` controls parallelization during overlap estimation phase
+- For best performance: Use `n_k_estimators >= n_jobs` to ensure all workers stay busy
 
 ## Dependencies
 
@@ -221,7 +356,7 @@ All energies are in **Hartrees** (atomic units).
 - PySCF: Quantum chemistry (integrals, FCI, mean-field)
 - Qiskit: Quantum circuits and state vectors
 - Qiskit Nature: Molecular Hamiltonians and fermion-qubit mappings
-- Qulacs: Fast quantum state simulation (recommended)
+- Qulacs: Fast quantum state simulation (used for shadow sampling)
 - Stim: Stabilizer circuit simulation and Clifford operations
 
 **Performance:**
@@ -230,10 +365,16 @@ All energies are in **Hartrees** (atomic units).
 ## Testing Strategy
 
 Tests are organized by functionality:
-- `test_shadow_protocol.py`: Shadow sampling and overlap estimation
-- `test_bitstring.py`: Bitstring conversions and stabilizer formalism
-- `test_stabilizer.py`: Clifford operations and canonicalization
-- `test_double_amplitudes_*.py`: Amplitude tensor antisymmetry and RHF symmetry
-- `test_rhf_optimization.py`: Validates RHF symmetry optimizations work correctly
+- Shadow protocol tests: Sampling, overlap estimation, and median-of-means
+- Bitstring tests: Conversions, stabilizer formalism, and endianness
+- Stabilizer tests: Clifford operations, canonicalization, and Gaussian elimination
+- Excitation tests: Single/double excitation generation and amplitude tensor conversions
+- Estimator tests: Validate both shadow and trivial estimators produce correct results
+- Solver tests: FCI and VQE solver correctness
 
-Run tests before committing changes to ensure quantum chemistry conventions remain correct.
+Run tests before committing changes to ensure quantum chemistry conventions remain correct:
+```bash
+pytest                    # Run all tests
+pytest -v                 # Verbose output
+pytest tests/test_*.py    # Run specific test file
+```
