@@ -5,12 +5,15 @@ import numpy as np
 from qiskit.quantum_info import Statevector, Clifford
 import qulacs
 import time
+import logging
 
 from abc import ABC, abstractmethod
 import stim
 from multiprocessing import Pool
 
 from shades.utils import Bitstring, gaussian_elimination, compute_x_rank, canonicalize
+
+logger = logging.getLogger(__name__)
 
 class AbstractEnsemble(ABC):
 
@@ -51,8 +54,6 @@ class AbstractShadow(ABC):
     ) -> tuple[Bitstring, Any]:
         pass
 
-
-
 @dataclass
 class CliffordShadow:
 
@@ -61,12 +62,18 @@ class CliffordShadow:
 
     @classmethod
     def from_state(cls, state: Statevector, n_samples: int):
+        
+        n = state.num_qubits
+        qulacs_template = qulacs.QuantumState(n)
+        qulacs_template.load(state.data)
+
         snapshots = []
         for _ in range(n_samples):
-            snapshot = cls.sample_state(state)
+            qulacs_state = qulacs_template.copy()
+            snapshot = cls._sample_with_qulacs_state(qulacs_state)
             snapshots.append(snapshot)
-        
-        return cls(snapshots=snapshots, n_qubits=state.num_qubits)
+
+        return cls(snapshots=snapshots, n_qubits=n)
     
     @property
     def N(self) -> int:
@@ -96,16 +103,11 @@ class CliffordShadow:
         return 2 * (2**self.n_qubits + 1) * np.mean(overlaps)
     
     @staticmethod
-    def sample_state(
-        state: Statevector
-    ) -> stim.Tableau:
-        
-        n = state.num_qubits
+    def _sample_with_qulacs_state(qulacs_state: qulacs.QuantumState) -> stim.Tableau:
+        n = qulacs_state.get_qubit_count()
         tab = stim.Tableau.random(n)
 
         clifford = _tableau_to_qiskit_clifford(tab)
-        qulacs_state = qulacs.QuantumState(n)
-        qulacs_state.load(state)
         circuit = _clifford_to_qulacs_circuit(clifford, n)
         circuit.update_quantum_state(qulacs_state)
         sample = qulacs_state.sampling(1)[0]
@@ -118,10 +120,16 @@ class CliffordShadow:
 
         return stim.Tableau.from_stabilizers(canonical_stabilizers)
 
+    @staticmethod
+    def sample_state(state: Statevector) -> stim.Tableau:
+        n = state.num_qubits
+        qulacs_state = qulacs.QuantumState(n)
+        qulacs_state.load(state.data)
+        return CliffordShadow._sample_with_qulacs_state(qulacs_state)
+
 @dataclass
 class MatchgateShadow:
     pass
-
 
 @dataclass
 class ComputationalShadow:
@@ -131,18 +139,26 @@ class ComputationalShadow:
 
     @classmethod
     def from_state(cls, state: Statevector, n_samples: int):
+        n = state.num_qubits
+
+        # Load Qulacs state ONCE for efficiency
+        qulacs_state = qulacs.QuantumState(n)
+        qulacs_state.load(state.data)
+
         snapshots = []
         for _ in range(n_samples):
-            b = cls.sample_state(state)
+            sample = qulacs_state.sampling(1)[0]
+            b = Bitstring.from_int(sample, size=n, endianess='little')
             snapshots.append(b)
 
-        return cls(snapshots=snapshots, n_qubits=state.num_qubits)
+        return cls(snapshots=snapshots, n_qubits=n)
 
     @staticmethod
     def sample_state(state: Statevector) -> Bitstring:
+        """Legacy method for backward compatibility."""
         n = state.num_qubits
         qulacs_state = qulacs.QuantumState(n)
-        qulacs_state.load(state)
+        qulacs_state.load(state.data)
         sample = qulacs_state.sampling(1)[0]
         b = Bitstring.from_int(sample, size=n, endianess='little')
         return b
@@ -196,11 +212,9 @@ def _prepare_tau(state: Statevector):
 @dataclass
 class ShadowProtocol:
     state: Statevector
-    verbose: int
 
     _k_estimators: Optional[List[CliffordShadow]] = None
     _task: Optional[PredictionTask] = None
-
 
     def collect_samples_for_overlaps(self, n_samples: int, n_estimators: int):
         """Collect shadows by sampling from tau for overlap estimation."""
@@ -220,23 +234,39 @@ class ShadowProtocol:
         if n_samples % n_estimators != 0:
             raise ValueError("The shadow must be split into K equally sized parts.")
 
+        samples_per_estimator = n_samples // n_estimators
+        logger.debug(
+            f"Collecting {n_samples:,} shadow samples across {n_estimators} estimators "
+            f"({samples_per_estimator:,} samples/estimator)"
+        )
+
         k_estimators = []
-        for _ in range(n_estimators):
-            shadow = CliffordShadow.from_state(state, n_samples)
+        for i in range(n_estimators):
+            logger.debug(f"Collecting estimator {i+1}/{n_estimators}...")
+            t_start = time.perf_counter()
+
+            shadow = CliffordShadow.from_state(state, samples_per_estimator)
             k_estimators.append(shadow)
 
+            t_elapsed = time.perf_counter() - t_start
+            throughput = samples_per_estimator / t_elapsed
+            logger.debug(
+                f"Estimator {i+1}/{n_estimators} complete: "
+                f"{samples_per_estimator:,} samples in {t_elapsed:.2f}s ({throughput:.0f} samples/s)"
+            )
+
+        logger.debug(f"Shadow collection complete: {n_estimators} estimators ready")
         return k_estimators
     
     def estimate_overlap(self, a: Bitstring, *, n_jobs: int = 1):
 
         if self._k_estimators is None:
             raise ValueError("Must call collect_samples before estimating anything")
-        
+
         if self._task is not PredictionTask.OVERLAP:
             raise RuntimeError("Incorrect shados sampled!")
 
-        if self.verbose >= 3:
-            t_start = time.perf_counter()
+        t_start = time.perf_counter()
 
         if n_jobs > 1 and len(self._k_estimators) > 1:
             args_list = [(estimator, a) for estimator in self._k_estimators]
@@ -250,10 +280,12 @@ class ShadowProtocol:
 
         result = np.median(means)
 
-        if self.verbose >= 3:
-            t_elapsed = time.perf_counter() - t_start
-            mode = "parallel" if self.n_jobs > 1 and len(self._k_estimators) > 1 else "serial"
-            print(f"    [Overlap Estimation] Computed overlap in {t_elapsed*1000:.2f} ms ({len(self._k_estimators)} estimators, {mode})")
+        t_elapsed = time.perf_counter() - t_start
+        mode = "parallel" if n_jobs > 1 and len(self._k_estimators) > 1 else "serial"
+        logger.debug(
+            f"Computed overlap in {t_elapsed*1000:.2f} ms "
+            f"({len(self._k_estimators)} estimators, {mode})"
+        )
 
         return result
 
