@@ -41,7 +41,7 @@ N_JOBS = 8  # Number of parallel jobs for estimation
 USE_QULACS = True  # Use Qulacs backend for faster simulation
 
 # Molecular system parameters
-N_HYDROGEN_ATOMS = 4  # Number of hydrogen atoms in chain
+N_HYDROGEN_ATOMS = 8  # Number of hydrogen atoms in chain
 BOND_LENGTH = 3.5  # Bond length in Angstroms
 BASIS_SET = "sto-3g"  # Basis set for quantum chemistry
 
@@ -125,8 +125,7 @@ def main():
             E_approx, _, _, _ = estimator.run(
                 n_samples=n_shots,
                 n_k_estimators=N_K_ESTIMATORS,
-                n_jobs=N_JOBS,
-                use_qulacs=USE_QULACS,
+                n_jobs=N_JOBS
             )
             all_energies[i, run] = np.real(E_approx)
             print(f"E = {np.real(E_approx):.8f} Ha")

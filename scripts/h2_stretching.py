@@ -23,29 +23,39 @@ References:
 """
 
 from pyscf import gto, scf
-from shades.estimator import GroundStateEstimator
+from shades.estimators.shadow import ShadowEstimator
 from shades.solvers import FCISolver
 from shades.utils import make_hydrogen_chain
 import numpy as np
 import matplotlib.pyplot as plt
 from plotting_config import setup_plotting_style, save_figure
+import logging
 
-# Simulation parameters
-N_SAMPLES = 1000          # Number of shadow measurement samples per estimation
-N_ESTIMATORS = 20         # Number of median-of-means estimators (k in paper)
-N_SIMULATIONS = 100       # Number of independent runs for statistical analysis
-N_HYDROGEN = 10           # Number of hydrogen atoms in chain
-
-# Interatomic distances to sample (in Angstroms)
+N_SAMPLES = 1000
+N_ESTIMATORS = 20
+N_SIMULATIONS = 100
+N_HYDROGEN = 8
 INTERATOMIC_DISTANCES = np.array([0.50, 0.75, 1.00, 1.25, 1.50, 1.75, 2.00, 2.25])
+N_WORKERS = 8
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler()],
+    force=True,
+)
 
 def main():
     """Run H2 stretching analysis and generate PES plot."""
 
-    # Initialize arrays to store results for each interatomic distance
-    exact_fci = np.empty_like(INTERATOMIC_DISTANCES)        # Exact FCI energies
-    estimated_mean = np.empty_like(INTERATOMIC_DISTANCES)   # Mean shadow estimates
-    estimated_std = np.empty_like(INTERATOMIC_DISTANCES)    # Std dev of shadow estimates
+    exact_fci = np.empty_like(INTERATOMIC_DISTANCES)
+    estimated_mean = np.empty_like(INTERATOMIC_DISTANCES)
+    estimated_std = np.empty_like(INTERATOMIC_DISTANCES)
+
+    # Store ALL individual trial data
+    all_estimations = np.empty((len(INTERATOMIC_DISTANCES), N_SIMULATIONS))
+    all_c0 = np.empty((len(INTERATOMIC_DISTANCES), N_SIMULATIONS))
+    all_c2_norms = np.empty((len(INTERATOMIC_DISTANCES), N_SIMULATIONS))
 
     print("=" * 80)
     print(f"H2 Potential Energy Surface via Shadow Tomography")
@@ -58,98 +68,108 @@ def main():
     print(f"  - Distances (Å):         {INTERATOMIC_DISTANCES}")
     print("=" * 80)
 
-    # Loop over each interatomic distance
     for j, d in enumerate(INTERATOMIC_DISTANCES):
         print(f"\n[{j+1}/{len(INTERATOMIC_DISTANCES)}] Processing distance = {d:.2f} Å")
 
-        # Array to store energy estimates from independent shadow runs
         estimations = np.empty(N_SIMULATIONS)
+        c0_values = np.empty(N_SIMULATIONS)
+        c2_norms = np.empty(N_SIMULATIONS)
 
-        # Build H2 molecule at current geometry
         mol_string = make_hydrogen_chain(N_HYDROGEN, d)
         mol = gto.Mole()
         mol.build(atom=mol_string, basis="sto-3g")
 
-        # Compute Hartree-Fock reference state
         mf = scf.RHF(mol)
-        # print(f"  HF Energy: {mf.h.hf_energy:.8f} Ha")
+        mf.run()
 
-        # Run exact FCI calculation for ground truth comparison
         fci_solver = FCISolver(mf)
-        estimator = GroundStateEstimator(mf, solver=fci_solver, verbose=4)
+        estimator = ShadowEstimator(mf, solver=fci_solver, verbose=4)
         print(f"  FCI Energy (exact): {estimator.E_exact:.8f} Ha")
 
-        # Perform N_SIMULATIONS independent shadow tomography runs
         print(f"  Running {N_SIMULATIONS} shadow estimations...")
         for i in range(N_SIMULATIONS):
-            E, _, _, _ = estimator.estimate_ground_state(N_SAMPLES, N_ESTIMATORS, use_qualcs=True, n_jobs=12)
+            E, c0, _, c2 = estimator.run(n_samples=N_SAMPLES, n_k_estimators=N_ESTIMATORS, n_jobs=N_WORKERS)
             estimations[i] = E
+            c0_values[i] = np.abs(c0)
+            c2_norms[i] = np.linalg.norm(c2)
 
-            # Progress indicator every 10 runs
             if (i + 1) % 1 == 0:
                 print(f"    Completed {i+1}/{N_SIMULATIONS} runs")
 
-        # Store exact and statistical results
+            estimator.clear_sample()
+
+        # Store individual trial data for this distance
+        all_estimations[j, :] = estimations
+        all_c0[j, :] = c0_values
+        all_c2_norms[j, :] = c2_norms
+
         exact_fci[j] = estimator.E_exact
         estimated_mean[j] = np.mean(estimations)
         estimated_std[j] = np.std(estimations)
 
-        # Print summary statistics for this distance
         error = estimated_mean[j] - exact_fci[j]
         print(f"  Shadow Mean:  {estimated_mean[j]:.8f} Ha")
         print(f"  Shadow Std:   {estimated_std[j]:.8f} Ha")
         print(f"  Mean Error:   {error:+.2e} Ha")
 
-    # === Plotting Section ===
+
     print("\n" + "=" * 80)
     print("Generating Potential Energy Surface Plot")
     print("=" * 80)
 
-    # Apply consistent plotting style
     setup_plotting_style()
 
-    # Create figure with appropriate size for publication
     _, ax = plt.subplots(figsize=(6, 4))
 
-    # Plot exact FCI curve
     ax.plot(INTERATOMIC_DISTANCES, exact_fci,
             'o-', label='Exact FCI', linewidth=2, markersize=6, color='C0')
 
-    # Plot shadow estimates with error bars (1 standard deviation)
     ax.errorbar(INTERATOMIC_DISTANCES, estimated_mean, yerr=estimated_std,
                 fmt='s--', label='Shadow Estimate', linewidth=1.5,
                 markersize=5, capsize=4, capthick=1.5, color='C1', alpha=0.8)
 
-    # Configure axis labels with LaTeX formatting
     ax.set_xlabel(r'Interatomic Distance (\AA)')
     ax.set_ylabel(r'Ground State Energy (Ha)')
     ax.set_title(f'H$_{{{N_HYDROGEN}}}$ Potential Energy Surface')
-
-    # Add legend
     ax.legend(loc='best', framealpha=0.9)
-
-    # Add grid for readability
     ax.grid(True, alpha=0.3)
-
-    # Tight layout to prevent label cutoff
     plt.tight_layout()
 
-    # Save figure in multiple formats
     output_prefix = f"h2_stretching_N{N_HYDROGEN}"
-    save_figure(f"{output_prefix}.pdf")
     save_figure(f"{output_prefix}.png", dpi=300)
 
-    # Display the plot
     plt.show()
 
-    # === Save numerical results ===
     print("\nSaving numerical results...")
+
+    # Save summary statistics as text file (backward compatible)
     results = np.column_stack((INTERATOMIC_DISTANCES, exact_fci,
                                estimated_mean, estimated_std))
     header = "Distance(Å)  FCI_Energy(Ha)  Shadow_Mean(Ha)  Shadow_Std(Ha)"
     np.savetxt(f"{output_prefix}_data.txt", results,
                header=header, fmt='%.10f', delimiter='  ')
-    print(f"Results saved to {output_prefix}_data.txt")
+    print(f"Summary statistics saved to {output_prefix}_data.txt")
+
+    # Save ALL individual trial data to .npz file
+    npz_filename = f"{output_prefix}_all_trials.npz"
+    np.savez(
+        npz_filename,
+        distances=INTERATOMIC_DISTANCES,
+        exact_fci=exact_fci,
+        all_energies=all_estimations,
+        all_c0=all_c0,
+        all_c2_norms=all_c2_norms,
+        estimated_mean=estimated_mean,
+        estimated_std=estimated_std,
+        # Save metadata
+        n_samples=N_SAMPLES,
+        n_estimators=N_ESTIMATORS,
+        n_simulations=N_SIMULATIONS,
+        n_hydrogen=N_HYDROGEN
+    )
+    print(f"All trial data saved to {npz_filename}")
+    print(f"  - Shape of all_energies: {all_estimations.shape}")
+    print(f"  - Contains: distances, exact_fci, all_energies, all_c0, all_c2_norms, + metadata")
 
     print("\n" + "=" * 80)
     print("Analysis Complete!")
