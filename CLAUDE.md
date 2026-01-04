@@ -75,13 +75,14 @@ python benchmarks/benchmark_shadow_scaling.py
 - Implements classical shadow tomography using Clifford group sampling
 - `ClassicalShadow`: Stores snapshots as lists of stim.Tableau objects
 - `ShadowProtocol`: Orchestrates shadow collection and overlap estimation
-  - Initialize with `ShadowProtocol(state, verbose=0)`
+  - Initialize with `ShadowProtocol(state)`
   - Call `collect_samples_for_overlaps(n_samples, n_estimators)` to collect shadows from tau state
   - Call `estimate_overlap(bitstring, n_jobs=1)` to estimate overlaps using median-of-means
 - Computes overlaps via stabilizer formalism and Gaussian elimination
 - **Performance**: Uses Qulacs backend for ~5-10x faster state evolution than Qiskit
 - Parallelization: `n_jobs > 1` in `estimate_overlap()` for multi-core overlap computation
 - **Critical**: Uses median-of-means (K estimators) for robust statistical estimation
+- **Logging**: Uses Python logging module at DEBUG level for overlap timing information
 
 **3. Ground State Solvers ([solvers/](src/shades/solvers/))**
 - Base class: `GroundStateSolver` (abstract interface in [base.py](src/shades/solvers/base.py))
@@ -128,7 +129,7 @@ AbstractEstimator(mf, solver) [ShadowEstimator or TrivialEstimator]
     ↓
 estimator.run(n_samples, n_k_estimators, ...)
     │
-    ├─ [Shadow only] Create ShadowProtocol(trial_state, verbose)
+    ├─ [Shadow only] Create ShadowProtocol(trial_state)
     │       ↓
     │   collect_samples_for_overlaps(n_samples, n_k_estimators)
     │       ↓
@@ -194,7 +195,20 @@ For restricted Hartree-Fock systems, the code automatically:
 - **Critical**: Qulacs is used for state evolution during shadow sampling (5-10x faster than Qiskit)
 - Parallelization: Set `n_jobs > 1` in `estimator.run()` to parallelize overlap estimation across K estimators
 - The `use_qulacs` parameter in `ShadowEstimator.run()` is currently always True
-- Verbosity levels: 0=WARNING, 1=INFO, 2+=DEBUG
+
+### Logging Configuration
+- The package uses Python's `logging` module for debug and informational messages
+- **IMPORTANT**: Scripts must configure logging to see output. Add this to your scripts:
+  ```python
+  import logging
+  logging.basicConfig(
+      level=logging.DEBUG,  # Use DEBUG to see all messages, INFO for less verbose
+      format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+      handlers=[logging.StreamHandler()],
+      force=True,
+  )
+  ```
+- Estimator verbosity levels are independent but still used for backward compatibility: 0=WARNING, 1=INFO, 2+=DEBUG
 
 ### Amplitude Tensor Structure
 - **t1 tensors** (single excitations):
