@@ -10,9 +10,9 @@ import time
 
 logger = logging.getLogger(__name__)
 
-
 class ShadowEstimator(AbstractEstimator):
     protocol: Optional[ShadowProtocol]
+    n_workers: int = 1
 
     def __init__(self, mf: Union[scf.hf.RHF, scf.uhf.UHF], solver: GroundStateSolver, *, verbose: int = 0):
         super().__init__(mf, solver, verbose)
@@ -29,18 +29,18 @@ class ShadowEstimator(AbstractEstimator):
         n_samples: int,
         n_k_estimators: int,
         n_jobs: int = 1,
-        use_qulacs: bool = True,
         calc_c1=False,
     ):
-        logger.debug(f"Shadow samples: {n_samples:,}, bins: {n_k_estimators}, workers: {n_jobs}")
-        logger.debug(f"Backend: {'Qulacs' if use_qulacs else 'Qiskit'}")
+        logger.debug(f"Shadow samples: {n_samples:,}, bins: {n_k_estimators}")
+
+        self.n_workers = n_jobs
 
         if self.protocol is None:
 
             logger.info("Collecting shadow samples...")
             t_start = time.perf_counter()
 
-            self.sample(n_samples, n_k_estimators, n_jobs, use_qulacs)
+            self.sample(n_samples, n_k_estimators)
 
             t_elapsed = time.perf_counter() - t_start
             throughput = n_samples / t_elapsed
@@ -53,16 +53,11 @@ class ShadowEstimator(AbstractEstimator):
     def clear_sample(self) -> None:
         self.protocol = None
 
-    def sample(
-        self, n_samples: int, n_k_estimators: int, n_jobs: int = 1, use_qulacs: bool = True
-    ) -> None:
-        self.protocol = ShadowProtocol(
-            self.trial, n_jobs=n_jobs, use_qulacs=use_qulacs, verbose=self.verbose - 1
-        )
-        self.protocol.collect_samples_for_overlaps(n_samples, n_k_estimators, prediction="overlap")
+    def sample(self, n_samples: int, n_k_estimators: int) -> None:
+        self.protocol = ShadowProtocol(self.trial)
+        self.protocol.collect_samples_for_overlaps(n_samples, n_k_estimators)
 
     def estimate_overlap(self, a: Bitstring) -> np.float64:
         if not self.protocol:
             raise RuntimeError()
-        
-        return self.protocol.estimate_overlap(a).real
+        return self.protocol.estimate_overlap(a, n_jobs=self.n_workers).real
