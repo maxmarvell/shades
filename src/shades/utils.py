@@ -8,6 +8,8 @@ from typing import Union, Optional
 from pyscf import scf
 from pyscf import ao2mo
 
+from qiskit.quantum_info import Statevector
+
 @dataclass
 class Bitstring():
 
@@ -85,6 +87,9 @@ class Bitstring():
     def to_array(self) -> NDArray[np.int_]:
         """Convert to numpy array of integers (0s and 1s)."""
         return self.array.astype(np.int_)
+    
+    def to_statevector(self) -> Statevector:
+        return Statevector(self.to_array())
 
     @classmethod
     def from_string(cls, s: str, endianess: str = 'little') -> 'Bitstring':
@@ -430,8 +435,68 @@ def compute_correlation_energy(
 
     return e_singles + e_doubles
 
+def pauli_terms_to_matrix(
+        hamiltonian: List[tuple[str, float]]
+    ) -> NDArray[np.complex128]:
+    """Convert a Hamiltonian represented as Pauli terms to a full matrix.
+
+    Args:
+        hamiltonian: List of (coefficient, pauli_string) tuples
+                    Examples: [(1.0, 'XY'), (0.5, 'ZI'), (2.0, 'XX')]
+
+    Returns:
+        Full matrix representation of the Hamiltonian as a 2^n x 2^n complex array
+
+    Example:
+        >>> # Hamiltonian H = X⊗Y + 0.5*Z⊗I
+        >>> hamiltonian = [(1.0, 'XY'), (0.5, 'ZI')]
+        >>> matrix = pauli_terms_to_matrix(hamiltonian)
+        >>> matrix.shape
+        (4, 4)
+    """
+    if not hamiltonian:
+        raise ValueError("Hamiltonian must contain at least one term")
+
+    # Get number of qubits from first term
+    n_qubits = len(hamiltonian[0][1])
+    dim = 2 ** n_qubits
+
+    # Validate all terms have same length
+    for coeff, pauli_string in hamiltonian:
+        if len(pauli_string) != n_qubits:
+            raise ValueError(
+                f"All Pauli strings must have the same length. "
+                f"Expected {n_qubits}, got {len(pauli_string)} for '{pauli_string}'"
+            )
+
+    # Define single-qubit Pauli matrices
+    I = np.array([[1, 0], [0, 1]], dtype=np.complex128)
+    X = np.array([[0, 1], [1, 0]], dtype=np.complex128)
+    Y = np.array([[0, -1j], [1j, 0]], dtype=np.complex128)
+    Z = np.array([[1, 0], [0, -1]], dtype=np.complex128)
+
+    pauli_map = {'I': I, 'X': X, 'Y': Y, 'Z': Z}
+
+    # Build full Hamiltonian matrix
+    H = np.zeros((dim, dim), dtype=np.complex128)
+
+    for coeff, pauli_string in hamiltonian:
+        # Build tensor product for this term
+        term_matrix = np.array([[1.0]], dtype=np.complex128)
+        for pauli_char in pauli_string:
+            if pauli_char not in pauli_map:
+                raise ValueError(
+                    f"Invalid Pauli character '{pauli_char}'. "
+                    f"Must be one of 'I', 'X', 'Y', 'Z'"
+                )
+            term_matrix = np.kron(term_matrix, pauli_map[pauli_char])
+
+        H += coeff * term_matrix
+
+    return H
+
 if __name__ == "__main__":
-    
+
     from shades.utils import make_hydrogen_chain
     from pyscf import gto, scf
 

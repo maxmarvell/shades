@@ -1,0 +1,3 @@
+[submodule "src/shades/stabilizer"]
+	path = src/shades/stabilizer
+	url = git@github.com:andreeaf/Stabilizer_QMC.git

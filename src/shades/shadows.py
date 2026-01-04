@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Union, List, Optional
+from typing import Union, List, Optional, Any
 from enum import Enum
 import numpy as np
 from qiskit.quantum_info import Statevector, Clifford
@@ -26,17 +26,44 @@ class CliffordGroup(AbstractEnsemble):
         return stim.Tableau.random(self.d)
 
 @dataclass
+class AbstractShadow(ABC):
+    snapshots: List
+    n_qubits: int
+
+    @property
+    def N(self) -> int:
+        """Total number of shadow measurements."""
+        return len(self.snapshots)
+
+    @classmethod
+    @abstractmethod
+    def from_state(cls, state: Statevector, n_samples: int):
+        pass
+
+    @abstractmethod
+    def overlap(self, a: Bitstring):
+        pass
+
+    @staticmethod
+    @abstractmethod
+    def sample_state(
+        state: Statevector
+    ) -> tuple[Bitstring, Any]:
+        pass
+
+
+
+@dataclass
 class CliffordShadow:
 
-    snapshots: Union[List[stim.Tableau], List[stim.PauliString]]
+    snapshots: Union[List[stim.Tableau]]
     n_qubits: int
 
     @classmethod
     def from_state(cls, state: Statevector, n_samples: int):
         snapshots = []
         for _ in range(n_samples):
-            b, tab = cls.sample_state(state)
-            snapshot = cls.construct_snapshot(b, tab)
+            snapshot = cls.sample_state(state)
             snapshots.append(snapshot)
         
         return cls(snapshots=snapshots, n_qubits=state.num_qubits)
@@ -71,7 +98,7 @@ class CliffordShadow:
     @staticmethod
     def sample_state(
         state: Statevector
-    ) -> tuple[Bitstring, stim.Tableau]:
+    ) -> stim.Tableau:
         
         n = state.num_qubits
         tab = stim.Tableau.random(n)
@@ -84,18 +111,41 @@ class CliffordShadow:
         sample = qulacs_state.sampling(1)[0]
         b = Bitstring.from_int(sample, size=n, endianess='little')
 
-        return b, tab
-    
-    @staticmethod
-    def construct_snapshot(
-        b: Bitstring, tab: stim.Tableau
-    ) -> stim.Tableau:
         U_inv = tab.inverse()
         stabilizers = b.to_stabilizers()
         transformed_stabilizers = [U_inv(s) for s in stabilizers]
         canonical_stabilizers = canonicalize(transformed_stabilizers)
+
         return stim.Tableau.from_stabilizers(canonical_stabilizers)
-        
+
+@dataclass
+class MatchgateShadow:
+    pass
+
+
+@dataclass
+class ComputationalShadow:
+
+    snapshots: List[Bitstring]
+    n_qubits: int
+
+    @classmethod
+    def from_state(cls, state: Statevector, n_samples: int):
+        snapshots = []
+        for _ in range(n_samples):
+            b = cls.sample_state(state)
+            snapshots.append(b)
+
+        return cls(snapshots=snapshots, n_qubits=state.num_qubits)
+
+    @staticmethod
+    def sample_state(state: Statevector) -> Bitstring:
+        n = state.num_qubits
+        qulacs_state = qulacs.QuantumState(n)
+        qulacs_state.load(state)
+        sample = qulacs_state.sampling(1)[0]
+        b = Bitstring.from_int(sample, size=n, endianess='little')
+        return b
 
 def _compute_single_estimator_overlap(args):
     """Compute overlap for a single K-estimator (for parallelization).
