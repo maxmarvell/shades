@@ -7,7 +7,7 @@ import numpy as np
 from pyscf import gto, scf
 
 from shades.brueckner import brueckner_cycle, rotate_mf
-from shades.estimators import ShadowEstimator, TrivialEstimator
+from shades.estimators import ShadowEstimator, ExactEstimator
 from shades.solvers import FCISolver
 from shades.utils import make_hydrogen_chain
 from plotting_config import setup_plotting_style, save_figure
@@ -95,7 +95,7 @@ def main():
     logger.info(f"Exact FCI energy: {fci_energy:.10f} Ha")
 
     # Both estimators share the same solver instance
-    exact_estimator = TrivialEstimator(mf_rot, solver, verbose=0)
+    exact_estimator = ExactEstimator(mf_rot, solver, verbose=0)
     shadow_estimator = ShadowEstimator(mf_rot, solver, verbose=0)
 
     c0 = exact_estimator.estimate_c0()

@@ -42,7 +42,7 @@ USE_QULACS = True  # Use Qulacs backend for faster simulation
 
 # Molecular system parameters
 N_HYDROGEN_ATOMS = 8  # Number of hydrogen atoms in chain
-BOND_LENGTH = 3.5  # Bond length in Angstroms
+BOND_LENGTH = 1.5  # Bond length in Angstroms
 BASIS_SET = "sto-3g"  # Basis set for quantum chemistry
 
 # Shadow sampling schedule (number of shots to test)
@@ -92,7 +92,7 @@ def main():
     print(f"\nMolecule: H{N_HYDROGEN_ATOMS} chain (bond length = {BOND_LENGTH:.2f} Å)")
     print(f"Basis set: {BASIS_SET}")
 
-    mf = scf.UHF(mol)
+    mf = scf.RHF(mol)
     mf.run()
 
     shots = SHOT_SCHEDULE

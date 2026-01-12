@@ -68,9 +68,19 @@ class StabilizerSubspace:
         N = len(states)
         S = np.zeros((N, N), dtype=np.complex128)
 
-        for i, s_i in enumerate(states):
-            for j, s_j in enumerate(states):
-                S[i,j] = s_i.inner_product(s_j)
+        # Convert stabilizer states to statevectors for exact computation
+        statevectors = [s.get_statevector() for s in states]
+
+        for i in range(N):
+            for j in range(N):
+                S[i, j] = np.vdot(statevectors[i], statevectors[j])
+
+        # for i, s_i in enumerate(states):
+        #     for j, s_j in enumerate(states):
+        #         S[i,j] = s_i.inner_product(s_j)
+
+        if not np.allclose(S, S.conj().T):
+            raise ValueError("Overlap matrix is not Hermitian!")
 
         return S
 
@@ -80,12 +90,23 @@ class StabilizerSubspace:
         N = len(states)
         H = np.zeros((N, N), dtype=np.complex128)
 
-        for j, s_j in enumerate(states):
-            projected_states = s_j.apply_hamiltonian(pauli_hamiltonian)
-            for s in projected_states:
-                for i, s_i in enumerate(states):
-                    E = s_i.inner_product(s, phase=True) * projected_states[s]
-                    H[i, j] += E
+        # Convert stabilizer states to statevectors for exact computation
+        statevectors = [s.get_statevector() for s in states]
+
+        # Build Hamiltonian matrix from Pauli terms
+        from shades.utils import pauli_terms_to_matrix
+        H_matrix = pauli_terms_to_matrix(pauli_hamiltonian)
+
+        # Compute H[i,j] = ⟨ψ_i|H|ψ_j⟩ using exact statevector inner products
+        for i in range(N):
+            for j in range(N):
+                # H|ψ_j⟩
+                H_psi_j = H_matrix @ statevectors[j]
+                # ⟨ψ_i|H|ψ_j⟩
+                H[i, j] = np.vdot(statevectors[i], H_psi_j)
+
+        if not np.allclose(H, H.conj().T):
+            raise ValueError("Hamiltonian matrix is not Hermitian!")
 
         return H
 
@@ -124,16 +145,35 @@ class ComputationalSubspace:
         N = len(states)
         H = np.zeros((N, N), dtype=np.complex128)
 
+        # Convert computational basis states to stabilizer states, then to statevectors
         stabilizers = [b.to_stabilizers() for b in states]
         tableaus = [stim.Tableau.from_stabilizers(s) for s in stabilizers]
         stabilizers_states = [stabilizer_from_stim_tableau(tab) for tab in tableaus]
+        statevectors = [s.get_statevector() for s in stabilizers_states]
 
-        for j, s_j in enumerate(stabilizers_states):
-            projected_states = s_j.apply_hamiltonian(pauli_hamiltonian)
-            for s in projected_states:
-                for i, s_i in enumerate(stabilizers_states):
-                    E = s_i.inner_product(s, phase=True) * projected_states[s]
-                    H[i, j] += E
+        # Build Hamiltonian matrix from Pauli terms
+        from shades.utils import pauli_terms_to_matrix
+        H_matrix = pauli_terms_to_matrix(pauli_hamiltonian)
+
+        # Compute H[i,j] = ⟨ψ_i|H|ψ_j⟩ using exact statevector inner products
+        for i in range(N):
+            for j in range(N):
+                # H|ψ_j⟩
+                H_psi_j = H_matrix @ statevectors[j]
+                # ⟨ψ_i|H|ψ_j⟩
+                H[i, j] = np.vdot(statevectors[i], H_psi_j)
+
+        # Check that the Hamiltonian matrix is Hermitian
+        if not np.allclose(H, H.conj().T):
+            max_diff = np.max(np.abs(H - H.conj().T))
+            # Find the worst offending elements
+            diff_matrix = np.abs(H - H.conj().T)
+            worst_i, worst_j = np.unravel_index(np.argmax(diff_matrix), diff_matrix.shape)
+            raise ValueError(
+                f"Hamiltonian matrix is not Hermitian! Max diff: {max_diff:.2e} "
+                f"at H[{worst_i},{worst_j}]={H[worst_i,worst_j]:.6f}, "
+                f"H[{worst_j},{worst_i}]*={np.conj(H[worst_j,worst_i]):.6f}"
+            )
 
         return H
 

@@ -341,13 +341,13 @@ def brueckner_cycle(
 
 if __name__ == "__main__":
     from shades.solvers import FCISolver
-    from shades.estimators import TrivialEstimator
+    from shades.estimators import ExactEstimator
     from shades.utils import make_hydrogen_chain
     from pyscf import gto, scf
 
-    # Example 1: RHF Brueckner cycle with TrivialEstimator
+    # Example 1: RHF Brueckner cycle with ExactEstimator
     print("=" * 60)
-    print("Example 1: RHF Brueckner Cycle with TrivialEstimator")
+    print("Example 1: RHF Brueckner Cycle with ExactEstimator")
     print("=" * 60)
 
     atom = make_hydrogen_chain(4, bond_length=0.73)
@@ -370,7 +370,7 @@ if __name__ == "__main__":
     mf_rot = rotate_mf(mf, t1, canonicalise=True, damping=0.0)
 
     solver = FCISolver(mf_rot)
-    estimator = TrivialEstimator(mf_rot, solver, verbose=1)
+    estimator = ExactEstimator(mf_rot, solver, verbose=1)
 
     # # Define convergence callback
     def converged(E, c0, norm):
@@ -400,6 +400,6 @@ if __name__ == "__main__":
     # mf_uhf.run()
 
     # solver_uhf = FCISolver(mf_uhf)
-    # estimator_uhf = TrivialEstimator(mf_uhf, solver_uhf, verbose=1)
+    # estimator_uhf = ExactEstimator(mf_uhf, solver_uhf, verbose=1)
 
     # brueckner_cycle(mf_uhf, estimator_uhf, max_iter=50, damping=0.7, use_diis=False, callback_fn=converged, verbose=2)

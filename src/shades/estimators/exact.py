@@ -8,13 +8,13 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-class TrivialEstimator(AbstractEstimator):
+class ExactEstimator(AbstractEstimator):
 
     def __init__(self, mf: Union[scf.hf.RHF, scf.uhf.UHF], solver: GroundStateSolver, *, verbose: int = 0):
         super().__init__(mf, solver, verbose)
 
     def estimate_overlap(self, a: Bitstring) -> np.float64:
-        idx = a.to_int()  
+        idx = a.to_int()
         return self.trial[idx].real
 
 
@@ -32,7 +32,7 @@ if __name__ == "__main__":
     from shades.solvers import FCISolver
     fci = FCISolver(mf)
 
-    estimator = TrivialEstimator(mf, fci)
+    estimator = ExactEstimator(mf, fci)
 
     E, c0, c1, c2 = estimator.run(calc_c1=True)
 

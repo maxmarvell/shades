@@ -509,9 +509,9 @@ if __name__ == "__main__":
     from shades.solvers import FCISolver
     fci = FCISolver(mf)
 
-    from shades.estimators import TrivialEstimator
+    from shades.estimators import ExactEstimator
 
-    estimator = TrivialEstimator(mf, fci)
+    estimator = ExactEstimator(mf, fci)
 
     t2_aa, t2_bb, t2_ab = estimator.estimate_c2()
 

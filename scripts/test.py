@@ -28,8 +28,8 @@ def main():
     fci_solver = FCISolver(hamiltonian)
     estimator = GroundStateEstimator(hamiltonian, solver=fci_solver, verbose=4)
 
-    protocol = ShadowProtocol(estimator.trial, n_jobs=6, use_qulacs=True, verbose=3)
-    protocol.collect_samples(N_SAMPLES, N_ESTIMATORS, prediction='overlap')
+    protocol = ShadowProtocol(estimator.trial)
+    protocol.collect_samples_for_overlaps(N_SAMPLES, N_ESTIMATORS)
 
     res = estimator.estimate_first_order_interactions(protocol)
 

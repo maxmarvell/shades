@@ -2,7 +2,7 @@
 Plot Brueckner Convergence Results
 
 This script loads and plots the convergence data from Brueckner orbital optimization,
-comparing TrivialEstimator (exact) and ShadowEstimator (sampling-based) results.
+comparing ExactEstimator (exact) and ShadowEstimator (sampling-based) results.
 
 Usage:
     python scripts/plot_brueckner_convergence.py [--data-file PATH] [--output-dir PATH]
