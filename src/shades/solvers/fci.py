@@ -3,6 +3,7 @@ from typing import Tuple, Union, Optional
 import numpy as np
 from qiskit.quantum_info import Statevector
 from pyscf import scf, fci, ci
+from pyscf.fci import direct_spin1
 
 class FCISolver(GroundStateSolver):
 
@@ -64,6 +65,17 @@ class FCISolver(GroundStateSolver):
                     full_statevector[qubit_index] = ci_coeff
 
         return Statevector(full_statevector)
+
+
+    def get_rdm2(self) -> np.ndarray:
+
+        if self.civec is None:
+            raise RuntimeError()
+        
+        norb = self.mf.mo_coeff.shape[1]
+        nelec = self.mf.mol.nelec
+        _, rdm2 = direct_spin1.make_rdm12(self.civec, norb, nelec)
+        return rdm2
 
 if __name__ == "__main__":
 

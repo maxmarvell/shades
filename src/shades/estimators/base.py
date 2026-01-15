@@ -25,6 +25,7 @@ class AbstractEstimator(ABC):
         self.E_hf = mf.e_tot
         self.mf = mf
         self.verbose = verbose
+        self.n_qubits = 2 * self.mf.mol.nao
 
     def update_reference(self, new_mf: Union[scf.hf.RHF, scf.uhf.UHF]):
         self.mf = new_mf

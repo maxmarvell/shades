@@ -13,9 +13,11 @@ class ExactEstimator(AbstractEstimator):
     def __init__(self, mf: Union[scf.hf.RHF, scf.uhf.UHF], solver: GroundStateSolver, *, verbose: int = 0):
         super().__init__(mf, solver, verbose)
 
-    def estimate_overlap(self, a: Bitstring) -> np.float64:
+    def estimate_overlap(self, a: Union[Bitstring, int]) -> np.float64:
+        if isinstance(a, int):
+            return self.trial.data[a].real
         idx = a.to_int()
-        return self.trial[idx].real
+        return self.trial.data[idx].real
 
 
 if __name__ == "__main__":
