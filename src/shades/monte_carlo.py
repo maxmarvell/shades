@@ -1,11 +1,13 @@
 from itertools import product, combinations
-from typing import List, Tuple, Callable, Any, Optional
+from typing import List, Tuple, Callable, Any, Optional, Union
 import numpy as np
 
 from abc import ABC, abstractmethod
 import random
 from pyscf.scf.hf import RHF
 from pyscf.scf.uhf import UHF
+from pyscf import ao2mo
+from pyblock2.driver.core import DMRGDriver, SymmetryTypes
 
 from shades.estimators import AbstractEstimator
 from shades.utils import Bitstring
@@ -19,7 +21,6 @@ def _gen_single_site_hops(
     possible nearest neighbours and the hop required to get there.
     """
     
-    #TODO: not tested for UHF where n_alpha and n_beta are not the same
     assert n_qubits % 2 == 0
 
     res = []
@@ -114,25 +115,20 @@ def _compute_fermionic_sign(
 
 class AbstractStochasticSampler(ABC):
 
+    def __init__(self):
+        pass
+
+
+    @abstractmethod
+    def sample(self) -> tuple[int, float]:
+        pass
+
+
+class WavefunctionSampler(AbstractStochasticSampler):
+
     def __init__(self, estimator: AbstractEstimator):
         self.estimator = estimator
         self.n_qubits = estimator.n_qubits
-
-
-    @abstractmethod
-    def initialise(self) -> int:
-        pass
-
-
-    @abstractmethod
-    def sample_next(self, n: int) -> int:
-        pass
-
-
-class Wavefunction(AbstractStochasticSampler):
-
-    def __init__(self, estimator: AbstractEstimator):
-        super().__init__(estimator)
         self.states = list(range(2**self.n_qubits))
 
         amplitudes = []
@@ -146,15 +142,13 @@ class Wavefunction(AbstractStochasticSampler):
         self.probabilities /= self.probabilities.sum()
 
 
-    def initialise(self):
-        return np.random.choice(self.states, p=self.probabilities)
+    def sample(self) -> tuple[int, float]:
+        return np.random.choice(self.states, p=self.probabilities), 1.0
     
 
-    def sample_next(self, _: int) -> int:
-        return np.random.choice(self.states, p=self.probabilities)
-    
+class MetropolisSampler(AbstractStochasticSampler):
 
-class Metropolis(AbstractStochasticSampler):
+    n: Optional[int]
 
     def __init__(
         self, 
@@ -162,7 +156,8 @@ class Metropolis(AbstractStochasticSampler):
         transition_fn: Callable[[int, int], Tuple[List[int], List[Tuple[int, int]]]],
         auto_corr_iters: int = 100
     ):
-        super().__init__(estimator)
+        self.estimator = estimator
+        self.n_qubits = estimator.n_qubits
         self.transition_fn = transition_fn
         self.auto_corr_iters = auto_corr_iters
 
@@ -170,9 +165,10 @@ class Metropolis(AbstractStochasticSampler):
             raise NotImplementedError('Not implemented yet for unrestricted Hartree-Fock!')
 
         self.nelec = self.estimator.mf.mol.nelec
+        self.n = None
 
 
-    def initialise(self):
+    def initialise(self) -> int:
         # get random valid initial state in the 
         # get random n_qubit bitstring with Hamming weight m 
         # TODO this is only implemented for RHF
@@ -183,14 +179,17 @@ class Metropolis(AbstractStochasticSampler):
         return n
     
 
-    def sample_next(self, n):
+    def sample(self) -> tuple[int, float]:
+
+        if self.n is None:
+            self.n = self.initialise()
 
         for _ in range(self.auto_corr_iters):
             m, t = self._propose_candidate(n)
-            if self._accept(n, m, t):
-                n = m
+            if self._accept(self.n, m, t):
+                self.n = m
 
-        return n
+        return self.n, 1.0
     
 
     def _propose_candidate(self, n: int) -> Tuple[int, Any]:
@@ -207,39 +206,103 @@ class Metropolis(AbstractStochasticSampler):
         return random.random() <= P
 
 
-class SurrogateModel(AbstractStochasticSampler):
+class DMRGSampler(AbstractStochasticSampler):
 
-    def initialise(self):
-        raise NotImplementedError()
-    
-    def sample_next(self, n):
-        return NotImplementedError()
-    
+    def __init__(self, mf: Union[RHF, UHF]):
+
+        if isinstance(mf, UHF):
+            raise NotImplementedError()
+        
+        norb = mf.mo_coeff.shape[1]
+        nelec = mf.mol.nelectron
+
+        h1e = mf.mo_coeff.T @ mf.get_hcore() @ mf.mo_coeff
+        eri = ao2mo.kernel(mol, mf.mo_coeff)
+        e_core = mol.energy_nuc()
+
+        self.driver = DMRGDriver(scratch="./tmp", symm_type=SymmetryTypes.SZ)
+        self.driver.initialize_system(n_sites=norb, n_elec=nelec, spin=0)
+        self.mpo = self.driver.get_qc_mpo(h1e=h1e, g2e=eri, ecore=e_core, iprint=0)
+        self.ket = self.driver.get_random_mps(tag="KET", bond_dim=250, nroots=1)
+        self.driver.dmrg(
+            self.mpo, self.ket,
+            bond_dims=[50, 100, 200],
+            noises=[1e-4, 1e-5, 0],
+            thrds=[1e-8],
+            n_sweeps=20,
+            iprint=0
+        )
+
+    def sample(self) -> tuple[int, float]:
+        
+        cfgs, coeffs = self.driver.sample_csf_coefficients(
+            self.ket, 
+            n_sample=1,
+            iprint=0
+        )
+
+        norb = cfgs.shape[1]
+
+        cfg = cfgs[0]
+        alpha = cfg & 1
+        beta = (cfg >> 1) & 1
+
+
+        res = sum(1 << i for i in range(norb) if alpha[i] == 1)
+        res += sum (1 << i for i in range(norb, 2*norb) if beta[i-norb] == 1)
+
+        return res, np.abs(coeffs[0]) ** 2
+
+type IndependentEstimators = tuple[AbstractEstimator, AbstractEstimator]
 
 class MonteCarloEstimator:
 
-    def __init__(self, estimator: AbstractEstimator, sampler: Optional[AbstractStochasticSampler] = None):
+    estimators: tuple[AbstractEstimator, Optional[AbstractEstimator]]
 
-        self.estimator = estimator
+    def __init__(
+        self,
+        estimators: Union[AbstractEstimator, IndependentEstimators],
+        sampler: Optional[AbstractStochasticSampler] = None
+    ):
+
+        if isinstance(estimators, tuple):
+            if len(estimators) != 2:
+                raise ValueError("If passing tuple, must provide exactly 2 estimators")
+            self.estimators = estimators
+            self.estimator = estimators[0]
+        else:
+            self.estimators = (estimators, None)
+            self.estimator = estimators
+
         self.n_qubits = self.estimator.n_qubits
 
         if sampler is None:
-            sampler = Wavefunction(estimator)
+            sampler = WavefunctionSampler(self.estimator)
         self.sampler = sampler
 
 
-    def _compute_2rdm_estimator(self, n: int):
+    def _compute_2rdm_estimator(self, n: int, bias_prob: Optional[float] = None):
 
         n_qubits = self.n_qubits
         gamma = np.zeros((n_qubits, n_qubits, n_qubits, n_qubits))
-        c_n = self.estimator.estimate_overlap(n)
+
+        estimator_n, estimator_m = self.estimators
+        if estimator_m is None:
+            estimator_m = estimator_n  # fall back to single estimator (biased)
+
+        c_n = estimator_n.estimate_overlap(Bitstring.from_int(n, n_qubits))
+
+        if bias_prob:
+            w = (np.abs(c_n) ** 2) / bias_prob
+        else:
+            w = 1
 
         # double hops
         hops, transitions = _gen_double_site_hops(n, n_qubits)
         for m, t in zip(hops, transitions):
             (i, j), (k, l) = t
-            c_m = self.estimator.estimate_overlap(m)
-            gamma[i, j, k, l] = _compute_fermionic_sign(m, t) * (c_m/c_n)
+            c_m = estimator_m.estimate_overlap(Bitstring.from_int(m, n_qubits))
+            gamma[i, j, k, l] = _compute_fermionic_sign(m, t) * (c_m/c_n) * w
 
         # single hops
         hops, transitions = _gen_single_site_hops(n, n_qubits)
@@ -248,14 +311,14 @@ class MonteCarloEstimator:
             occupied = [j for j in range(n_qubits) if (m >> j) & 1 and j != k]
             for j in occupied:
                 t = ((i, j), (k, j))
-                c_m = self.estimator.estimate_overlap(m)
-                gamma[i, j, k, j] = _compute_fermionic_sign(m, t) * (c_m/c_n)
+                c_m = estimator_m.estimate_overlap(Bitstring.from_int(m, n_qubits))
+                gamma[i, j, k, j] = _compute_fermionic_sign(m, t) * (c_m/c_n) * w
 
 
         # get density-density terms
         occupied = [i for i in range(n_qubits) if (n >> i) & 1]
         for i, j in combinations(occupied, 2):
-            gamma[i, j, i, j] = -1.0
+            gamma[i, j, i, j] = -1.0 * w
 
         # antisymmetrise
         return gamma - gamma.transpose(1,0,2,3) - gamma.transpose(0,1,3,2) + gamma.transpose(1,0,3,2)
@@ -265,13 +328,12 @@ class MonteCarloEstimator:
 
         n_qubits = self.n_qubits
         gamma = np.zeros((n_qubits, n_qubits, n_qubits, n_qubits))
-        n = self.sampler.initialise()
 
         for i in range(max_iters):
 
-            n = self.sampler.sample_next(n)
+            n, p = self.sampler.sample()
 
-            estimate = self._compute_2rdm_estimator(n)
+            estimate = self._compute_2rdm_estimator(n, p)
             gamma += (estimate - gamma) / (i + 1)
 
         # return _spinorb_to_spatial_2rdm(gamma, norb=n_qubits // 2)
@@ -334,6 +396,9 @@ if __name__ == "__main__":
     mf = scf.RHF(mol)
     mf.run()
 
+    model = DMRGSampler(mf)
+    model.sample()
+
     fci_solver = FCISolver(mf)
     estimator = ExactEstimator(mf, solver=fci_solver)
 
@@ -343,8 +408,8 @@ if __name__ == "__main__":
         fci_solver.civec, norb, nelec
     )
 
-    mc = MonteCarloEstimator(estimator)
-    mc_rdm2 = mc.estimate_2rdm(max_iters=2000000)
+    mc = MonteCarloEstimator(estimator, sampler=model)
+    mc_rdm2 = mc.estimate_2rdm(max_iters=100000)
 
     rdm2 = fci_solver.get_rdm2()
 
@@ -352,8 +417,6 @@ if __name__ == "__main__":
     print("PySCF rdm2aa[0,0,1,1]:", rdm2aa[0,0,1,1])
     print("PySCF rdm2ab[0,0,0,0]:", rdm2ab[0,0,0,0])
 
-    # Get your spin-orbital result (modify estimate_2rdm to return before spatial conversion)
-    # Extract αα block from your result
     mc_aa = mc_rdm2[:norb, :norb, :norb, :norb]
     mc_ab = mc_rdm2[:norb, norb:, :norb, norb:]
 
@@ -372,6 +435,5 @@ if __name__ == "__main__":
     print("PySCF value:", rdm2aa[idx])
     print("MC value:", mc_aa_converted[idx])
 
-    # Also check a few specific elements
     for p, q, r, s in [(0,0,0,0), (0,1,1,0), (1,0,0,1), (1,1,0,0)]:
         print(f"[{p},{q},{r},{s}]: PySCF={rdm2aa[p,q,r,s]:.4f}, MC={mc_aa_converted[p,q,r,s]:.4f}")
