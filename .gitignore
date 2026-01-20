@@ -162,6 +162,7 @@ Thumbs.db
 data/
 outputs/
 logs/
+tmp/
 
 .ruff_cache/
 results/
