@@ -10,16 +10,20 @@ import time
 
 logger = logging.getLogger(__name__)
 
+
+
 class ShadowEstimator(AbstractEstimator):
+
     protocol: Optional[ShadowProtocol]
-    n_workers: int = 1
+    _amplitude_cache: dict[int, np.float64]
+    n_workers: int = 8
 
     def __init__(self, mf: Union[scf.hf.RHF, scf.uhf.UHF], solver: GroundStateSolver, *, verbose: int = 0):
         super().__init__(mf, solver, verbose)
         self.protocol = None
+        self._amplitude_cache = {}
 
     def update_reference(self, new_mf: Union[scf.hf.RHF, scf.uhf.UHF]):
-        """Update the mean-field reference and clear cached shadow samples."""
         super().update_reference(new_mf)
         self.clear_sample()
 
@@ -52,6 +56,7 @@ class ShadowEstimator(AbstractEstimator):
     
     def clear_sample(self) -> None:
         self.protocol = None
+        self._amplitude_cache = {}
 
     def sample(self, n_samples: int, n_k_estimators: int) -> None:
         self.protocol = ShadowProtocol(self.trial)
@@ -60,4 +65,9 @@ class ShadowEstimator(AbstractEstimator):
     def estimate_overlap(self, a: Bitstring) -> np.float64:
         if not self.protocol:
             raise RuntimeError()
-        return self.protocol.estimate_overlap(a, n_jobs=self.n_workers).real
+        key = a.to_int()
+
+        if key not in self._amplitude_cache:
+            self._amplitude_cache[key] = self.protocol.estimate_overlap(a, n_jobs=self.n_workers).real
+        
+        return self._amplitude_cache[key]
