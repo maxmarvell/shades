@@ -14,7 +14,8 @@ from shades.utils import Bitstring
 
 def _gen_single_site_hops(
     reference: int, 
-    n_qubits: int
+    n_qubits: int,
+    symm_type: str = 'SZ'
 ) -> Tuple[List[int], List[Tuple[int, int]]]:
     """
     Given a reference single slater determinant as a bitstring, generate all
@@ -30,6 +31,8 @@ def _gen_single_site_hops(
     alpha_vac = [i for i in range(n_spatial) if not (reference >> i) & 1]
     alpha_hops = [(o, v) for o, v in product(alpha_occ, alpha_vac)]
     res += [reference ^ (1 << i) ^ (1 << j) for i, j in alpha_hops]
+
+    if symm_type == 'SU2': return res, alpha_hops
     
     beta_occ = [i for i in range(n_spatial, n_qubits) if (reference >> i) & 1]
     beta_vac = [i for i in range(n_spatial, n_qubits) if not (reference >> i) & 1]
@@ -41,7 +44,8 @@ def _gen_single_site_hops(
 
 def _gen_double_site_hops(
     reference: int, 
-    n_qubits: int
+    n_qubits: int,
+    symm_type: str = 'SZ'
 ) -> Tuple[List[int], List[Tuple[Tuple[int, int], Tuple[int, int]]]]:
     """
     Given a reference single slater determinant as a bitstring, generate all
@@ -50,27 +54,29 @@ def _gen_double_site_hops(
     
     #TODO: not tested for UHF where n_alpha and n_beta are not the same
     assert n_qubits % 2 == 0
-
-    n_spatial = n_qubits // 2
+    norb = n_qubits // 2
     res = []
 
-    alpha_occ = [i for i in range(n_spatial) if (reference >> i) & 1]
-    alpha_vac = [i for i in range(n_spatial) if not (reference >> i) & 1]
+    alpha_occ = [i for i in range(norb) if (reference >> i) & 1]
+    alpha_vac = [i for i in range(norb) if not (reference >> i) & 1]
     double_alpha = [(o, v) for o, v in product(combinations(alpha_occ, 2), combinations(alpha_vac, 2))]
     res += [reference ^ (1 << i[0]) ^ (1 << i[1]) ^ (1 << j[0]) ^ (1 << j[1]) for i, j in double_alpha]
 
-
-    beta_occ = [i for i in range(n_spatial, n_qubits) if (reference >> i) & 1]
-    beta_vac = [i for i in range(n_spatial, n_qubits) if not (reference >> i) & 1]
-    double_beta = [(o, v) for o, v in product(combinations(beta_occ, 2), combinations(beta_vac, 2))]
-    res += [reference ^ (1 << i[0]) ^ (1 << i[1]) ^ (1 << j[0]) ^ (1 << j[1]) for i, j in double_beta]
-
+    beta_occ = [i for i in range(norb, n_qubits) if (reference >> i) & 1]
+    beta_vac = [i for i in range(norb, n_qubits) if not (reference >> i) & 1]
 
     alpha_beta = [(o, v) for o, v in product(product(alpha_occ, beta_occ), product(alpha_vac, beta_vac))]
     res += [reference ^ (1 << i[0]) ^ (1 << i[1]) ^ (1 << j[0]) ^ (1 << j[1]) for i, j in alpha_beta]
 
-    
-    return res, double_alpha + double_beta + alpha_beta    
+    if symm_type == 'SU2': return res, double_alpha + alpha_beta
+
+    double_beta = [(o, v) for o, v in product(combinations(beta_occ, 2), combinations(beta_vac, 2))]
+    res += [reference ^ (1 << i[0]) ^ (1 << i[1]) ^ (1 << j[0]) ^ (1 << j[1]) for i, j in double_beta]
+
+    # beta_alpha = [(o, v) for o, v in product(product(beta_occ, alpha_occ), product(beta_vac, alpha_vac))]
+    # res += [reference ^ (1 << i[0]) ^ (1 << i[1]) ^ (1 << j[0]) ^ (1 << j[1]) for i, j in beta_alpha]
+
+    return res, double_alpha + alpha_beta + double_beta 
 
 
 def _compute_fermionic_sign(
@@ -120,7 +126,7 @@ class AbstractStochasticSampler(ABC):
 
 
     @abstractmethod
-    def sample(self) -> tuple[int, float]:
+    def sample(self) -> tuple[int, Optional[float]]:
         pass
 
 
@@ -142,8 +148,8 @@ class WavefunctionSampler(AbstractStochasticSampler):
         self.probabilities /= self.probabilities.sum()
 
 
-    def sample(self) -> tuple[int, float]:
-        return np.random.choice(self.states, p=self.probabilities), 1.0
+    def sample(self) -> tuple[int, Optional[float]]:
+        return np.random.choice(self.states, p=self.probabilities), None
     
 
 class MetropolisSampler(AbstractStochasticSampler):
@@ -185,11 +191,11 @@ class MetropolisSampler(AbstractStochasticSampler):
             self.n = self.initialise()
 
         for _ in range(self.auto_corr_iters):
-            m, t = self._propose_candidate(n)
+            m, t = self._propose_candidate(self.n)
             if self._accept(self.n, m, t):
                 self.n = m
 
-        return self.n, 1.0
+        return self.n, None
     
 
     def _propose_candidate(self, n: int) -> Tuple[int, Any]:
@@ -206,7 +212,7 @@ class MetropolisSampler(AbstractStochasticSampler):
         return random.random() <= P
 
 
-class DMRGSampler(AbstractStochasticSampler):
+class MPSSampler(AbstractStochasticSampler):
 
     def __init__(self, mf: Union[RHF, UHF]):
 
@@ -217,8 +223,8 @@ class DMRGSampler(AbstractStochasticSampler):
         nelec = mf.mol.nelectron
 
         h1e = mf.mo_coeff.T @ mf.get_hcore() @ mf.mo_coeff
-        eri = ao2mo.kernel(mol, mf.mo_coeff)
-        e_core = mol.energy_nuc()
+        eri = ao2mo.kernel(mf.mol, mf.mo_coeff)
+        e_core = mf.mol.energy_nuc()
 
         self.driver = DMRGDriver(scratch="./tmp", symm_type=SymmetryTypes.SZ)
         self.driver.initialize_system(n_sites=norb, n_elec=nelec, spin=0)
@@ -253,7 +259,9 @@ class DMRGSampler(AbstractStochasticSampler):
 
         return res, np.abs(coeffs[0]) ** 2
 
+
 type IndependentEstimators = tuple[AbstractEstimator, AbstractEstimator]
+
 
 class MonteCarloEstimator:
 
@@ -292,17 +300,17 @@ class MonteCarloEstimator:
 
         c_n = estimator_n.estimate_overlap(Bitstring.from_int(n, n_qubits))
 
-        if bias_prob:
-            w = (np.abs(c_n) ** 2) / bias_prob
-        else:
-            w = 1
+        if np.abs(c_n) < 1e-15:
+            return gamma
+
+        w = (np.abs(c_n) ** 2) / bias_prob if bias_prob else 1.0
 
         # double hops
-        hops, transitions = _gen_double_site_hops(n, n_qubits)
+        hops, transitions = _gen_double_site_hops(n, n_qubits, symm_type='SZ')
         for m, t in zip(hops, transitions):
             (i, j), (k, l) = t
             c_m = estimator_m.estimate_overlap(Bitstring.from_int(m, n_qubits))
-            gamma[i, j, k, l] = _compute_fermionic_sign(m, t) * (c_m/c_n) * w
+            gamma[i, j, l, k] = _compute_fermionic_sign(m, t) * (c_m/c_n) * w
 
         # single hops
         hops, transitions = _gen_single_site_hops(n, n_qubits)
@@ -312,13 +320,14 @@ class MonteCarloEstimator:
             for j in occupied:
                 t = ((i, j), (k, j))
                 c_m = estimator_m.estimate_overlap(Bitstring.from_int(m, n_qubits))
-                gamma[i, j, k, j] = _compute_fermionic_sign(m, t) * (c_m/c_n) * w
+                gamma[i, j, j, k] = _compute_fermionic_sign(m, t) * (c_m/c_n) * w
 
 
         # get density-density terms
         occupied = [i for i in range(n_qubits) if (n >> i) & 1]
+        c_m = estimator_m.estimate_overlap(Bitstring.from_int(n, n_qubits))
         for i, j in combinations(occupied, 2):
-            gamma[i, j, i, j] = -1.0 * w
+            gamma[i, j, i, j] = (c_m/c_n) * w 
 
         # antisymmetrise
         return gamma - gamma.transpose(1,0,2,3) - gamma.transpose(0,1,3,2) + gamma.transpose(1,0,3,2)
@@ -339,101 +348,7 @@ class MonteCarloEstimator:
         # return _spinorb_to_spatial_2rdm(gamma, norb=n_qubits // 2)
         # TODO convert this gamma into spatial orbital basis for RHF
         return gamma
-    
-
-def _spatial_to_spinorb_rdm2(rdm2_spatial: np.ndarray, norb: int) -> np.ndarray:
-    norb_spin = 2 * norb
-    rdm2_spin = np.zeros((norb_spin, norb_spin, norb_spin, norb_spin))
-
-    # Alpha-alpha block: indices [0:norb, 0:norb, 0:norb, 0:norb]
-    rdm2_spin[:norb, :norb, :norb, :norb] = rdm2_spatial
-
-    # Beta-beta block: indices [norb:, norb:, norb:, norb:]
-    rdm2_spin[norb:, norb:, norb:, norb:] = rdm2_spatial
-
-    # Alpha-beta and beta-alpha blocks
-    # For different spins, only direct term (no exchange)
-    for i in range(norb):
-        for j in range(norb):
-            for k in range(norb):
-                for l in range(norb):
-                    # Alpha(i), Beta(j), Alpha(k), Beta(l)
-                    rdm2_spin[i, j + norb, k, l + norb] = rdm2_spatial[i, j, k, l]
-                    # Beta(i), Alpha(j), Beta(k), Alpha(l)
-                    rdm2_spin[i + norb, j, k + norb, l] = rdm2_spatial[i, j, k, l]
-
-    return rdm2_spin
-
-def _spinorb_to_spatial_2rdm(gamma_so, norb):
-    gamma_spatial = np.zeros((norb, norb, norb, norb))
-    for p in range(norb):
-        for q in range(norb):
-            for r in range(norb):
-                for s in range(norb):
-                    gamma_spatial[p,q,r,s] += gamma_so[p, q, r, s]
-                    gamma_spatial[p,q,r,s] += gamma_so[p+norb, q+norb, r+norb, s+norb]
-                    gamma_spatial[p,q,r,s] += gamma_so[p, q+norb, r, s+norb]
-                    gamma_spatial[p,q,r,s] += gamma_so[p+norb, q, r+norb, s]
-    
-    return gamma_spatial
 
 
 if __name__ == "__main__":
-
-    from pyscf import gto, scf
-    from pyscf.fci import direct_spin1
-    from shades.solvers import FCISolver
-    from shades.estimators import ExactEstimator
-    from shades.utils import make_hydrogen_chain
-
-    N_HYDROGEN = 4
-    d = 1.5
-
-    mol_string = make_hydrogen_chain(N_HYDROGEN, d)
-    mol = gto.Mole()
-    mol.build(atom=mol_string, basis="sto-3g", verbose=0)
-
-    mf = scf.RHF(mol)
-    mf.run()
-
-    model = DMRGSampler(mf)
-    model.sample()
-
-    fci_solver = FCISolver(mf)
-    estimator = ExactEstimator(mf, solver=fci_solver)
-
-    norb = mf.mo_coeff.shape[1]
-    nelec = mf.mol.nelec
-    (rdm1a, rdm1b), (rdm2aa, rdm2ab, rdm2bb) = direct_spin1.make_rdm12s(
-        fci_solver.civec, norb, nelec
-    )
-
-    mc = MonteCarloEstimator(estimator, sampler=model)
-    mc_rdm2 = mc.estimate_2rdm(max_iters=100000)
-
-    rdm2 = fci_solver.get_rdm2()
-
-    print("PySCF rdm2aa[0,1,0,1]:", rdm2aa[0,1,0,1])
-    print("PySCF rdm2aa[0,0,1,1]:", rdm2aa[0,0,1,1])
-    print("PySCF rdm2ab[0,0,0,0]:", rdm2ab[0,0,0,0])
-
-    mc_aa = mc_rdm2[:norb, :norb, :norb, :norb]
-    mc_ab = mc_rdm2[:norb, norb:, :norb, norb:]
-
-    print("\nYour mc_aa[0,1,0,1]:", mc_aa[0,1,0,1])
-    print("Your mc_aa[0,0,1,1]:", mc_aa[0,0,1,1])
-    print("Your mc_ab[0,0,0,0]:", mc_ab[0,0,0,0])
-
-
-    mc_aa_converted = mc_aa.transpose(0, 3, 1, 2)
-    diff = np.abs(rdm2aa - mc_aa_converted)
-
-    # Find the worst element
-    print(np.max(diff))
-    idx = np.unravel_index(np.argmax(diff), diff.shape)
-    print("Max diff at index:", idx)
-    print("PySCF value:", rdm2aa[idx])
-    print("MC value:", mc_aa_converted[idx])
-
-    for p, q, r, s in [(0,0,0,0), (0,1,1,0), (1,0,0,1), (1,1,0,0)]:
-        print(f"[{p},{q},{r},{s}]: PySCF={rdm2aa[p,q,r,s]:.4f}, MC={mc_aa_converted[p,q,r,s]:.4f}")
+    pass
