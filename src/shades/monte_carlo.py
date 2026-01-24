@@ -239,25 +239,30 @@ class MPSSampler(AbstractStochasticSampler):
             iprint=0
         )
 
-    def sample(self) -> tuple[int, float]:
-        
-        cfgs, coeffs = self.driver.sample_csf_coefficients(
-            self.ket, 
-            n_sample=1,
+        # TODO need to probably truncate this at some point
+        self.dets, coeffs = self.driver.get_csf_coefficients(
+            self.ket,
+            cutoff=1e-12,
             iprint=0
         )
 
-        norb = cfgs.shape[1]
+        probs = np.abs(coeffs)**2
+        self.probs = probs / probs.sum()
 
-        cfg = cfgs[0]
-        alpha = cfg & 1
-        beta = (cfg >> 1) & 1
+    def sample(self) -> tuple[int, float]:
+        
+        idx = np.random.choice(len(self.dets), p=self.probs)
+        det = self.dets[idx]
+
+        norb = det.shape[0]
+        alpha = det & 1
+        beta = (det >> 1) & 1
 
 
         res = sum(1 << i for i in range(norb) if alpha[i] == 1)
         res += sum (1 << i for i in range(norb, 2*norb) if beta[i-norb] == 1)
 
-        return res, np.abs(coeffs[0]) ** 2
+        return res, self.probs[idx]
 
 
 type IndependentEstimators = tuple[AbstractEstimator, AbstractEstimator]
@@ -316,7 +321,7 @@ class MonteCarloEstimator:
         hops, transitions = _gen_single_site_hops(n, n_qubits)
         for m, t in zip(hops, transitions):
             i, k = t
-            occupied = [j for j in range(n_qubits) if (m >> j) & 1 and j != k]
+            occupied = [j for j in range(n_qubits) if (m >> j) & 1 and (n >> j) & 1]
             for j in occupied:
                 t = ((i, j), (k, j))
                 c_m = estimator_m.estimate_overlap(Bitstring.from_int(m, n_qubits))
