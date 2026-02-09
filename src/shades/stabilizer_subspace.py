@@ -6,7 +6,7 @@ from scipy.linalg import eigh
 import stim
 from qiskit.quantum_info import Statevector
 from shades.utils import Bitstring
-from shades.shadows import ComputationalShadow, CliffordShadow
+from shades.tomography import ComputationalShadow, CliffordShadow
 
 def compose_tableau_bitstring(T_U: stim.Tableau, b: Bitstring):
     stabs = b.to_stabilizers()
@@ -204,7 +204,7 @@ if __name__ == "__main__":
     from qiskit_nature.second_q.mappers import JordanWignerMapper
     from qiskit.quantum_info import Statevector
     from scipy.linalg import eigh
-    from shades.shadows import CliffordShadow
+    from shades.tomography import CliffordShadow
 
     fermionic_op = FermionicOp({
         "+_0 -_2": -1.0, "+_2 -_0": -1.0,

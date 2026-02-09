@@ -15,19 +15,6 @@ from shades.utils import Bitstring, gaussian_elimination, compute_x_rank, canoni
 
 logger = logging.getLogger(__name__)
 
-class AbstractEnsemble(ABC):
-
-    def __init__(self, d: int):
-        self.d = d
-
-    @abstractmethod
-    def generate_sample(self) -> stim.Tableau | np.ndarray:
-        """Gives a sample according to the ensemble"""
-
-class CliffordGroup(AbstractEnsemble):
-    def generate_sample(self) -> stim.Tableau:
-        return stim.Tableau.random(self.d)
-
 @dataclass
 class AbstractShadow(ABC):
     snapshots: List
@@ -35,7 +22,6 @@ class AbstractShadow(ABC):
 
     @property
     def N(self) -> int:
-        """Total number of shadow measurements."""
         return len(self.snapshots)
 
     @classmethod
@@ -77,7 +63,6 @@ class CliffordShadow:
     
     @property
     def N(self) -> int:
-        """Total number of shadow measurements."""
         return len(self.snapshots)
 
     def overlap(self, a: Bitstring):
@@ -141,7 +126,6 @@ class ComputationalShadow:
     def from_state(cls, state: Statevector, n_samples: int):
         n = state.num_qubits
 
-        # Load Qulacs state ONCE for efficiency
         qulacs_state = qulacs.QuantumState(n)
         qulacs_state.load(state.data)
 
@@ -289,6 +273,9 @@ class ShadowProtocol:
 
         return result
 
+
+    def estimate_stabilizer_overlap(self, S: stim.Tableau):
+        pass
 
 
 

@@ -5,6 +5,43 @@ from qiskit.quantum_info import Statevector
 from pyscf import scf, fci, ci
 from pyscf.fci import direct_spin1
 
+def civec_to_statevector(civec, norb, nelec, mode = 'RHF'):
+
+    n_alpha, n_beta = nelec
+    n_qubits = 2 * norb
+
+    full_statevector = np.zeros(2**n_qubits, dtype=complex)
+
+    if mode == 'RHF':
+
+        alpha_strings = fci.cistring.make_strings(range(norb), n_alpha)
+        beta_strings = fci.cistring.make_strings(range(norb), n_beta)
+
+        for i_alpha, alpha_str in enumerate(alpha_strings):
+            for i_beta, beta_str in enumerate(beta_strings):
+                ci_coeff = civec[i_alpha, i_beta]
+
+                qubit_index = int(alpha_str) + (int(beta_str) << norb)
+
+                full_statevector[qubit_index] = ci_coeff
+    else:
+
+        alpha_strings = fci.cistring.make_strings(range(norb), n_alpha)
+        beta_strings = fci.cistring.make_strings(range(norb), n_beta)
+
+        civec_flat = civec.ravel()
+
+        for i_alpha, alpha_str in enumerate(alpha_strings):
+            for i_beta, beta_str in enumerate(beta_strings):
+                idx = i_alpha * len(beta_strings) + i_beta
+                ci_coeff = civec_flat[idx]
+
+                qubit_index = int(alpha_str) + (int(beta_str) << norb)
+                full_statevector[qubit_index] = ci_coeff
+
+    return Statevector(full_statevector)
+
+
 class FCISolver(GroundStateSolver):
 
     civec: Optional[np.ndarray]

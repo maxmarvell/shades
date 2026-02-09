@@ -20,7 +20,7 @@ from pyscf.fci import direct_spin1
 from shades.solvers import FCISolver
 from shades.estimators import ExactEstimator
 from shades.utils import make_hydrogen_chain
-from shades.monte_carlo import MPSSampler, MetropolisSampler, MonteCarloEstimator, _gen_single_site_hops
+from shades.monte_carlo import MPSSampler, MonteCarloEstimator
 
 from utils import spinorb_to_spatial_chem, doubles_energy, total_energy_from_rdm12
 
@@ -31,14 +31,14 @@ logging.basicConfig(
     force=True,
 )
 
-RUN_COMMENT = "Check that using exact coefficients the Monte Carlo sampler yields a valid 2-RDM sampling directly from the wavefunction."
+RUN_COMMENT = "Check that using exact coefficients the Monte Carlo sampler yields a valid 2-RDM sampling directly from a trial MPS state."
 
 DEFAULT_OUTPUT_DIR = f"./results/rdm2_convergence/exact/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}/"
 
 N_RUNS = 20
-N_MC_ITERS = [5000, 10_000, 15_000, 25_000]
+N_MC_ITERS = [500, 1000, 1500, 2500, 5000]
 
-N_HYDROGEN = 4
+N_HYDROGEN = 8
 BOND_LENGTH = 1.5
 BASIS_SET = "sto-3g"
 
@@ -87,7 +87,6 @@ def main():
     print(f"Correlation Energy:       {E_fci - E_hf:.10f} Ha")
     print("=" * 70)
 
-    # sampler = MetropolisSampler(estimator, _gen_single_site_hops, auto_corr_iters=1000)
     estimator = ExactEstimator(mf, fci_solver)
     sampler = MPSSampler(mf)
 

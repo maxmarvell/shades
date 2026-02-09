@@ -11,10 +11,14 @@ type DoubleSpinCase = Literal["alpha-alpha", "beta-beta", "alpha-beta"]
 
 
 def get_hf_reference(mf: Union[scf.hf.RHF, scf.uhf.UHF]) -> Bitstring:
-    n_alpha, n_beta = mf.mol.nelec
+    nalpha, nbeta = mf.mol.nelec
     norb = mf.mol.nao
-    alpha_string = [True] * n_alpha + [False] * (norb - n_alpha)
-    beta_string = [True] * n_beta + [False] * (norb - n_beta)
+
+    # TODO migrate to just using integers instead of pointless bitstrings
+    # return sum([1 << i for i in range(nalpha)]) + sum([1 << (i + norb) for i in range(nbeta)])
+
+    alpha_string = [True] * nalpha + [False] * (norb - nalpha)
+    beta_string = [True] * nbeta + [False] * (norb - nbeta)
     return Bitstring(alpha_string + beta_string, endianess="little")
 
 
@@ -314,11 +318,13 @@ if __name__ == "__main__":
     from shades.utils import make_hydrogen_chain
     from pyscf import gto, scf
 
-    atom = make_hydrogen_chain(8, bond_length=1.0)
+    atom = make_hydrogen_chain(4, bond_length=1.0)
     mol = gto.Mole()
     mol.build(atom=atom, basis="sto-3g", verbose=0, spin=0)
     mf = scf.UHF(mol)
     mf.run()
+
+    get_hf_reference(mf)
 
     doubles = get_doubles(mf, spin_cases=["alpha-alpha"])
 

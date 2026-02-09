@@ -132,19 +132,10 @@ class AbstractStochasticSampler(ABC):
 
 class WavefunctionSampler(AbstractStochasticSampler):
 
-    def __init__(self, estimator: AbstractEstimator):
-        self.estimator = estimator
-        self.n_qubits = estimator.n_qubits
+    def __init__(self, state: np.ndarray, n_qubits: int):
+        self.n_qubits = n_qubits
         self.states = list(range(2**self.n_qubits))
-
-        amplitudes = []
-        for state in self.states:
-            bitstring = Bitstring.from_int(state, self.n_qubits)
-            overlap = self.estimator.estimate_overlap(bitstring)
-            amplitudes.append(overlap)
-
-        amplitudes = np.array(amplitudes)
-        self.probabilities = np.abs(amplitudes)**2
+        self.probabilities = np.abs(state)**2
         self.probabilities /= self.probabilities.sum()
 
 
@@ -290,7 +281,7 @@ class MonteCarloEstimator:
         self.n_qubits = self.estimator.n_qubits
 
         if sampler is None:
-            sampler = WavefunctionSampler(self.estimator)
+            sampler = WavefunctionSampler(self.estimator.solver.state.data, self.n_qubits)
         self.sampler = sampler
 
 
@@ -356,4 +347,73 @@ class MonteCarloEstimator:
 
 
 if __name__ == "__main__":
-    pass
+    
+    from shades.utils import make_hydrogen_chain
+    from shades.solvers import FCISolver
+    from pyscf import gto, scf
+
+    N_HYDROGEN = 10
+    BOND_LENGTH = 1.5
+    BASIS_SET = "sto-3g"
+
+    hstring = make_hydrogen_chain(N_HYDROGEN, BOND_LENGTH)
+    mol = gto.Mole()
+    mol.build(atom=hstring, basis=BASIS_SET, verbose=0)
+
+    mf = scf.RHF(mol)
+    mf.run()
+
+    fci = FCISolver(mf)
+    fci.solve()
+
+    mps = MPSSampler(mf)
+
+    norb = mf.mo_coeff.shape[1]
+    n_qubits = 2 * norb
+
+    amp = fci.state.data
+    idx = np.argwhere(np.abs(amp)**2 > 1e-16)   # compare probs to probs
+    fci_coeffs = {format(k0, f"0{n_qubits}b")[::-1]: float(np.abs(amp[k0])**2) for k0 in idx[:,0]}
+
+    def _block_2_to_idx(det):
+        norb = det.shape[0]
+        alpha = det & 1
+        beta = (det >> 1) & 1
+        res = sum(1 << i for i in range(norb) if alpha[i] == 1)
+        res += sum (1 << i for i in range(norb, 2*norb) if beta[i-norb] == 1)
+        return res
+
+    mps_coeffs = {format(_block_2_to_idx(k), f"0{n_qubits}b")[::-1]: v for k, v in zip(mps.dets, mps.probs)}
+    # fci_coeffs = dict(zip(idx, fci.state.data[idx]))
+    # mps_coeffs = dict(zip(mps.dets, mps.probs))
+
+    k1 = set(fci_coeffs)
+    k2 = set(mps_coeffs)
+
+    print("common:", len(k1 & k2))
+    print("only in fci:", k1 - k2)
+    print("only in mps:", k2 - k1)
+
+    for k in sorted(k1 & k2):
+        v1 = complex(fci_coeffs[k])
+        v2 = complex(mps_coeffs[k])
+        abs_err = abs(v1 - v2)
+        rel_err = abs_err / max(abs(v2), 1e-15)
+
+        print(
+            k,
+            f"psi1={v1:.6e}",
+            f"psi2={v2:.6e}",
+            f"|Δ|={abs_err:.3e}",
+            f"rel={rel_err:.3e}",
+        )
+
+
+    only = sorted([(k, mps_coeffs[k]) for k in (k2 - k1)], key=lambda x: -x[1])
+    for k, p in only[:20]:
+        print(k, p)
+
+    mass_only_mps = sum(mps_coeffs[k] for k in (k2 - k1))
+    mass_common   = sum(mps_coeffs[k] for k in (k1 & k2))
+    print("mass_only_mps:", mass_only_mps)
+    print("mass_common:", mass_common)

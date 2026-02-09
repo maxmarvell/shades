@@ -1,7 +1,7 @@
 from shades.estimators import AbstractEstimator
 from shades.solvers import GroundStateSolver
 from shades.utils import Bitstring
-from shades.shadows import ShadowProtocol
+from shades.tomography import ShadowProtocol
 from pyscf import scf
 from typing import Union, Optional
 import numpy as np

@@ -21,9 +21,8 @@ from pyscf.fci import direct_spin1
 from shades.solvers import FCISolver
 from shades.estimators import ShadowEstimator
 from shades.utils import make_hydrogen_chain
-from shades.monte_carlo import MPSSampler, MonteCarloEstimator
+from shades.monte_carlo import MonteCarloEstimator, MPSSampler
 
-from plotting_config import setup_plotting_style, save_figure
 from utils import spinorb_to_spatial_chem, doubles_energy, total_energy_from_rdm12
 
 logging.basicConfig(
@@ -33,16 +32,16 @@ logging.basicConfig(
     force=True,
 )
 
-RUN_COMMENT = "Check that using exact coefficients the Monte Carlo sampler yields a valid."
+RUN_COMMENT = "Running a test at high shot count and iteration steps to see if can converge for H8."
 
 DEFAULT_OUTPUT_DIR = f"./results/rdm2_convergence/shadow/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}/"
 
 N_RUNS = 20
-N_MC_ITERS = [5000, 10_000, 15_000, 25_000, 50_000]
-N_SHADOWS = [1000, 4000, 10_000, 20_000, 50_000]
+N_MC_ITERS = [100, 500, 1000]
+N_SHADOWS = [50000]
 N_K_ESTIMATORS = 20
 
-N_HYDROGEN = 4
+N_HYDROGEN = 8
 BOND_LENGTH = 1.5
 BASIS_SET = "sto-3g"
 
@@ -129,7 +128,7 @@ def main():
                 shadow2.sample(n_samples//2, N_K_ESTIMATORS)
                 estimator = (shadow1, shadow2)
 
-                mc = MonteCarloEstimator(estimator, sampler)
+                mc = MonteCarloEstimator(estimator, sampler=sampler)
                 rdm2_mc = mc.estimate_2rdm(max_iters=n_iters)
                 rdm2 = spinorb_to_spatial_chem(rdm2_mc, norb)
 
@@ -162,8 +161,8 @@ def main():
         "bond_length_angstrom": float(BOND_LENGTH),
         "basis_set": str(BASIS_SET),
         "n_runs": int(N_RUNS),
-        "n_mc_iters": np.asarray(N_MC_ITERS, dtype=np.int64),
-        'n_shadow_samples': np.asarray(N_SHADOWS, dtype=np.int64),
+        "n_mc_iters": N_MC_ITERS,
+        'n_shadow_samples': N_SHADOWS,
         "E_hf_hartree": float(E_hf),
         "E_fci_hartree": float(E_fci),
         "E_corr_hartree": float(E_fci - E_hf),
@@ -181,115 +180,8 @@ def main():
         json.dump(metadata, f, indent=2)
     print(f"Saved: {metadata_path}")
 
-    print("\n" + "=" * 70)
-    print("Generating Convergence Plots")
-    print("=" * 70)
-
     npz_path = os.path.join(output_dir, "data.npz")
     results = np.load(npz_path, allow_pickle=True)
-
-    n_samples_arr = np.asarray(results['n_shadow_samples'])
-
-    rel_frob_mean = results['rel_frob_rdm2'].mean(axis=(1, 2))
-    rel_frob_std  = results['rel_frob_rdm2'].std(axis=(1, 2), ddof=1)
-    rel_frob_sem  = rel_frob_std / np.sqrt(N_RUNS)
-
-    rel_E2_mean = results['rel_err_E2'].mean(axis=(1, 2))
-    rel_E2_std  = results['rel_err_E2'].std(axis=(1, 2), ddof=1)
-    rel_E2_sem  = rel_E2_std / np.sqrt(N_RUNS)
-
-    setup_plotting_style()
-    _, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 4))
-
-
-    # --- Plot 1: Relative Frobenius error of RDM2 ---
-    ax1.errorbar(
-        n_samples_arr,
-        rel_frob_mean,
-        yerr=rel_frob_sem,
-        fmt='o-', capsize=5, capthick=2,
-        label=r'$\|\Delta\Gamma\|_F / \|\Gamma_{\mathrm{ref}}\|_F$',
-        linewidth=2, markersize=8,
-    )
-
-    # ref_scaling = rel_frob_mean[0] * np.sqrt(n_samples_arr[0] / n_samples_arr)
-    # ax1.loglog(
-    #     n_samples_arr, ref_scaling, '--',
-    #     label=r'$1/\sqrt{N}$ scaling', linewidth=2, alpha=0.6
-    # )
-
-    ax1.set_xlabel('Number of Shadow Samples')
-    ax1.set_ylabel('Relative Frobenius Error')
-    ax1.set_xscale('log')
-    ax1.set_yscale('log')
-    ax1.set_title('RDM2 Relative Frobenius Convergence')
-    ax1.legend(loc='best', framealpha=0.9)
-    ax1.grid(True, alpha=0.3, which='both')
-
-    # --- Plot 2: Relative two-electron energy error (E2 / doubles) ---
-    ax2.errorbar(
-        n_samples_arr,
-        rel_E2_mean,
-        yerr=rel_E2_sem,
-        fmt='o-', capsize=5, capthick=2,
-        label=r'$|E_{2,\mathrm{MC}}-E_{2,\mathrm{ref}}|/|E_{2,\mathrm{ref}}|$',
-        linewidth=2, markersize=8,
-    )
-
-    # Compute mean and SEM for E_doubles across runs
-    E_doubles_mean = results['E_doubles'].mean(axis=(1, 2))  # Average over MC iters and runs
-    E_doubles_std = results['E_doubles'].std(axis=(1, 2), ddof=1)
-    E_doubles_sem = E_doubles_std / np.sqrt(N_RUNS)
-
-
-    # ref_scaling_rel = rel_E2_mean[0] * np.sqrt(n_samples_arr[0] / n_samples_arr)
-    # ax2.loglog(
-    #     n_samples_arr, ref_scaling_rel, '--',
-    #     label=r'$1/\sqrt{N}$ scaling', linewidth=2, alpha=0.6
-    # )
-
-    ax1.set_xlabel('Number of Shadow Samples')
-    ax2.set_ylabel('Relative $E_2$ Error')
-    ax2.set_xscale('log')
-    ax2.set_yscale('log')
-    ax2.set_title('Two-electron Energy Convergence')
-    ax2.legend(loc='best', framealpha=0.9)
-    ax2.grid(True, alpha=0.3, which='both')
-
-    ax3.errorbar(
-        n_samples_arr,
-        E_doubles_mean,
-        yerr=E_doubles_sem,
-        fmt='o-', capsize=5, capthick=2,
-        label=r'$E_2^{\mathrm{MC}}$',
-        linewidth=2, markersize=8,
-    )
-    ax3.axhline(E_double_ref, color='r', linestyle='--', linewidth=2, label=r'$E_2^{\mathrm{ref}}$')
-
-    ax3.set_xlabel('Number of Shadow Samples')
-    ax3.set_ylabel(r'$E_2$ (Hartree)')
-    ax3.set_xscale('log')
-    ax3.set_title('Two-electron Energy vs Reference')
-    ax3.legend(loc='best', framealpha=0.9)
-    ax3.grid(True, alpha=0.3, which='both')
-
-    plt.tight_layout()
-
-    pdf_path = os.path.join(output_dir, 'rdm2_convergence.pdf')
-    png_path = os.path.join(output_dir, 'rdm2_convergence.png')
-    svg_path = os.path.join(output_dir, 'rdm2_convergence.svg')
-    save_figure(pdf_path)
-    save_figure(png_path, dpi=PLOT_DPI)
-    save_figure(svg_path)
-    print(f"Plots saved: rdm2_convergence.pdf, rdm2_convergence.png, rdm2_convergence.png")
-
-    plt.show()
-
-    print("\n" + "=" * 70)
-    print("Analysis Complete!")
-    print(f"Results saved to: {os.path.abspath(output_dir)}")
-    print("=" * 70)
-
 
 if __name__ == "__main__":
     main()

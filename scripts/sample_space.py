@@ -21,7 +21,7 @@ import matplotlib.pyplot as plt
 from typing import Dict, Tuple, List
 import qulacs
 
-from shades.shadows import _tableau_to_qiskit_clifford, _clifford_to_qulacs_circuit
+from shades.tomography import _tableau_to_qiskit_clifford, _clifford_to_qulacs_circuit
 from shades.utils import Bitstring, compute_x_rank, canonicalize
 
 

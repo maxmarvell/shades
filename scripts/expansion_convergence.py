@@ -24,7 +24,7 @@ from scipy.linalg import eigh
 
 from shades.stabilizer_subspace import StabilizerSubspace, compose_tableau_bitstring
 from shades.stabilizer import StabilizerState
-from shades.shadows import CliffordShadow
+from shades.tomography import CliffordShadow
 
 
 # ============================================================================

@@ -13,7 +13,7 @@ from shades.excitations import (
     get_singles,
     singles_to_t1,
 )
-from shades.utils import Bitstring, compute_correlation_energy
+from shades.utils import compute_correlation_energy
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ class AbstractEstimator(ABC):
         return e_total, c0, c1, c2
 
     @abstractmethod
-    def estimate_overlap(self, a: Bitstring) -> np.float64:
+    def estimate_overlap(self, a: int) -> np.float64:
         pass
 
     def estimate_c0(self)-> np.float64:

@@ -26,17 +26,5 @@ def setup_plotting_style():
 
 
 def save_figure(filename, dpi=300, bbox_inches='tight', **kwargs):
-    """Save figure with consistent high-quality settings.
-
-    Args:
-        filename: Output filename (with extension, e.g., 'plot.pdf')
-        dpi: Resolution in dots per inch (default: 300)
-        bbox_inches: Bounding box setting (default: 'tight')
-        **kwargs: Additional arguments passed to plt.savefig()
-
-    Example:
-        >>> plt.plot([1, 2, 3], [1, 4, 9])
-        >>> save_figure('my_plot.pdf')
-    """
     plt.savefig(filename, dpi=dpi, bbox_inches=bbox_inches, **kwargs)
     print(f"Figure saved to: {filename}")

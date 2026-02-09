@@ -163,9 +163,9 @@ class SingleExcitation:
 
 def gaussian_elimination(
     stabilizers: List[stim.PauliString],
-        ref_state: Bitstring,
-        target_state: Bitstring
-    ) -> complex:
+    ref_state: Bitstring,
+    target_state: Bitstring
+) -> complex:
     """Compute the phase of overlap between a stabilizer and a target basis state.
 
     If no overlap simply returns 0 + 0j
