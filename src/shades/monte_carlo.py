@@ -10,7 +10,6 @@ from pyscf import ao2mo
 from pyblock2.driver.core import DMRGDriver, SymmetryTypes
 
 from shades.estimators import AbstractEstimator
-from shades.utils import Bitstring
 
 def _gen_single_site_hops(
     reference: int, 
@@ -197,19 +196,19 @@ class MetropolisSampler(AbstractStochasticSampler):
 
     def _accept(self, n: int, m: int, t: Any) -> bool:
         # TODO: In general we also need to account fot the transition amplitudes T(m->n)/T(n->m)
-        c_n = self.estimator.estimate_overlap(Bitstring.from_int(n, self.n_qubits))
-        c_m = self.estimator.estimate_overlap(Bitstring.from_int(m, self.n_qubits))
+        c_n = self.estimator.estimate_overlap(n)
+        c_m = self.estimator.estimate_overlap(m)
         P = min(1.0, (c_m * np.conj(c_m)) / (c_n * np.conj(c_n)))
         return random.random() <= P
 
 
 class MPSSampler(AbstractStochasticSampler):
 
-    def __init__(self, mf: Union[RHF, UHF]):
+    def __init__(self, mf: Union[RHF, UHF], max_bond_dim: int = 200):
 
         if isinstance(mf, UHF):
             raise NotImplementedError()
-        
+
         norb = mf.mo_coeff.shape[1]
         nelec = mf.mol.nelectron
 
@@ -217,13 +216,17 @@ class MPSSampler(AbstractStochasticSampler):
         eri = ao2mo.kernel(mf.mol, mf.mo_coeff)
         e_core = mf.mol.energy_nuc()
 
+        schedule = [d for d in [50, 100, 200, max_bond_dim] if d <= max_bond_dim]
+        if not schedule or schedule[-1] != max_bond_dim:
+            schedule.append(max_bond_dim)
+
         self.driver = DMRGDriver(scratch="./tmp", symm_type=SymmetryTypes.SZ)
         self.driver.initialize_system(n_sites=norb, n_elec=nelec, spin=0)
         self.mpo = self.driver.get_qc_mpo(h1e=h1e, g2e=eri, ecore=e_core, iprint=0)
-        self.ket = self.driver.get_random_mps(tag="KET", bond_dim=250, nroots=1)
+        self.ket = self.driver.get_random_mps(tag="KET", bond_dim=max_bond_dim + 50, nroots=1)
         self.driver.dmrg(
             self.mpo, self.ket,
-            bond_dims=[50, 100, 200],
+            bond_dims=schedule,
             noises=[1e-4, 1e-5, 0],
             thrds=[1e-8],
             n_sweeps=20,
@@ -233,7 +236,7 @@ class MPSSampler(AbstractStochasticSampler):
         # TODO need to probably truncate this at some point
         self.dets, coeffs = self.driver.get_csf_coefficients(
             self.ket,
-            cutoff=1e-12,
+            cutoff=0,
             iprint=0
         )
 
@@ -294,18 +297,18 @@ class MonteCarloEstimator:
         if estimator_m is None:
             estimator_m = estimator_n  # fall back to single estimator (biased)
 
-        c_n = estimator_n.estimate_overlap(Bitstring.from_int(n, n_qubits))
+        c_n = estimator_n.estimate_overlap(n)
 
         if np.abs(c_n) < 1e-15:
             return gamma
 
-        w = (np.abs(c_n) ** 2) / bias_prob if bias_prob else 1.0
+        w = (np.abs(c_n) ** 2) / bias_prob if bias_prob is not None else 1.0
 
         # double hops
         hops, transitions = _gen_double_site_hops(n, n_qubits, symm_type='SZ')
         for m, t in zip(hops, transitions):
             (i, j), (k, l) = t
-            c_m = estimator_m.estimate_overlap(Bitstring.from_int(m, n_qubits))
+            c_m = estimator_m.estimate_overlap(m)
             gamma[i, j, l, k] = _compute_fermionic_sign(m, t) * (c_m/c_n) * w
 
         # single hops
@@ -315,13 +318,13 @@ class MonteCarloEstimator:
             occupied = [j for j in range(n_qubits) if (m >> j) & 1 and (n >> j) & 1]
             for j in occupied:
                 t = ((i, j), (k, j))
-                c_m = estimator_m.estimate_overlap(Bitstring.from_int(m, n_qubits))
+                c_m = estimator_m.estimate_overlap(m)
                 gamma[i, j, j, k] = _compute_fermionic_sign(m, t) * (c_m/c_n) * w
 
 
         # get density-density terms
         occupied = [i for i in range(n_qubits) if (n >> i) & 1]
-        c_m = estimator_m.estimate_overlap(Bitstring.from_int(n, n_qubits))
+        c_m = estimator_m.estimate_overlap(n)
         for i, j in combinations(occupied, 2):
             gamma[i, j, i, j] = (c_m/c_n) * w 
 
@@ -329,20 +332,50 @@ class MonteCarloEstimator:
         return gamma - gamma.transpose(1,0,2,3) - gamma.transpose(0,1,3,2) + gamma.transpose(1,0,3,2)
 
 
-    def estimate_2rdm(self, *, max_iters: int = 10000) -> np.ndarray:
+    def estimate_2rdm(
+        self,
+        *,
+        max_iters: int = 10000,
+        n_batches: int = 1,
+        callback: Optional[Callable[[int, np.ndarray], None]] = None,
+    ) -> np.ndarray:
 
         n_qubits = self.n_qubits
-        gamma = np.zeros((n_qubits, n_qubits, n_qubits, n_qubits))
 
-        for i in range(max_iters):
+        if n_batches <= 1:
+            gamma = np.zeros((n_qubits, n_qubits, n_qubits, n_qubits))
+            for i in range(max_iters):
+                n, p = self.sampler.sample()
+                estimate = self._compute_2rdm_estimator(n, p)
+                gamma += (estimate - gamma) / (i + 1)
+                if callback is not None:
+                    try:
+                        callback(i, gamma)
+                    except StopIteration:
+                        break
+            return gamma
 
-            n, p = self.sampler.sample()
+        if max_iters % n_batches != 0:
+            raise ValueError("max_iters must be divisible by n_batches")
 
-            estimate = self._compute_2rdm_estimator(n, p)
-            gamma += (estimate - gamma) / (i + 1)
+        batch_size = max_iters // n_batches
+        batch_means = np.zeros((n_batches, n_qubits, n_qubits, n_qubits, n_qubits))
 
-        # return _spinorb_to_spatial_2rdm(gamma, norb=n_qubits // 2)
-        # TODO convert this gamma into spatial orbital basis for RHF
+        for b in range(n_batches):
+            batch_mean = np.zeros((n_qubits, n_qubits, n_qubits, n_qubits))
+            for j in range(batch_size):
+                n, p = self.sampler.sample()
+                estimate = self._compute_2rdm_estimator(n, p)
+                batch_mean += (estimate - batch_mean) / (j + 1)
+            batch_means[b] = batch_mean
+
+            if callback is not None:
+                gamma = np.median(batch_means[:b + 1], axis=0)
+                global_iter = (b + 1) * batch_size - 1
+                callback(global_iter, gamma)
+
+        return np.median(batch_means, axis=0)
+
         return gamma
 
 

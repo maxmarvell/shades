@@ -5,11 +5,11 @@ from numpy.typing import NDArray
 from scipy.linalg import eigh
 import stim
 from qiskit.quantum_info import Statevector
-from shades.utils import Bitstring
+from shades.utils import bitstring_to_stabilizers
 from shades.tomography import ComputationalShadow, CliffordShadow
 
-def compose_tableau_bitstring(T_U: stim.Tableau, b: Bitstring):
-    stabs = b.to_stabilizers()
+def compose_tableau_bitstring(T_U: stim.Tableau, b: int, n_qubits: int):
+    stabs = bitstring_to_stabilizers(b, n_qubits)
     T_b = stim.Tableau.from_stabilizers(stabs)
     return T_U * T_b
 
@@ -29,7 +29,7 @@ def stabilizer_from_stim_tableau(tableau: stim.Tableau):
 
     return StabilizerState(generator_matrix, find_basis_state=True)
 
-ComputationalBasisState = Bitstring
+ComputationalBasisState = int
 
 class StabilizerSubspace:
 
@@ -146,7 +146,9 @@ class ComputationalSubspace:
         H = np.zeros((N, N), dtype=np.complex128)
 
         # Convert computational basis states to stabilizer states, then to statevectors
-        stabilizers = [b.to_stabilizers() for b in states]
+        # Derive n_qubits from first tableau length
+        n_qubits = len(pauli_hamiltonian[0][1]) if pauli_hamiltonian else 0
+        stabilizers = [bitstring_to_stabilizers(b, n_qubits) for b in states]
         tableaus = [stim.Tableau.from_stabilizers(s) for s in stabilizers]
         stabilizers_states = [stabilizer_from_stim_tableau(tab) for tab in tableaus]
         statevectors = [s.get_statevector() for s in stabilizers_states]

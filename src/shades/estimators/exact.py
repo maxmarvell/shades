@@ -1,6 +1,5 @@
 from shades.estimators import AbstractEstimator
 from shades.solvers import GroundStateSolver
-from shades.utils import Bitstring
 from pyscf import scf
 from typing import Union
 import numpy as np
@@ -13,11 +12,8 @@ class ExactEstimator(AbstractEstimator):
     def __init__(self, mf: Union[scf.hf.RHF, scf.uhf.UHF], solver: GroundStateSolver, *, verbose: int = 0):
         super().__init__(mf, solver, verbose)
 
-    def estimate_overlap(self, a: Union[Bitstring, int]) -> np.float64:
-        if isinstance(a, int):
-            return self.trial.data[a].real
-        idx = a.to_int()
-        return self.trial.data[idx].real
+    def estimate_overlap(self, a: int) -> np.float64:
+        return self.trial.data[a].real
 
 
 if __name__ == "__main__":

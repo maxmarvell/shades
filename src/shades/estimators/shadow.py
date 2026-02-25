@@ -1,6 +1,5 @@
 from shades.estimators import AbstractEstimator
 from shades.solvers import GroundStateSolver
-from shades.utils import Bitstring
 from shades.tomography import ShadowProtocol
 from pyscf import scf
 from typing import Union, Optional
@@ -16,7 +15,7 @@ class ShadowEstimator(AbstractEstimator):
 
     protocol: Optional[ShadowProtocol]
     _amplitude_cache: dict[int, np.float64]
-    n_workers: int = 8
+    n_workers: int = 1
 
     def __init__(self, mf: Union[scf.hf.RHF, scf.uhf.UHF], solver: GroundStateSolver, *, verbose: int = 0):
         super().__init__(mf, solver, verbose)
@@ -55,6 +54,8 @@ class ShadowEstimator(AbstractEstimator):
         return super().run(calc_c1=calc_c1)
     
     def clear_sample(self) -> None:
+        if self.protocol is not None:
+            self.protocol._close_pool()
         self.protocol = None
         self._amplitude_cache = {}
 
@@ -62,12 +63,11 @@ class ShadowEstimator(AbstractEstimator):
         self.protocol = ShadowProtocol(self.trial)
         self.protocol.collect_samples_for_overlaps(n_samples, n_k_estimators)
 
-    def estimate_overlap(self, a: Bitstring) -> np.float64:
+    def estimate_overlap(self, a: int) -> np.float64:
         if not self.protocol:
             raise RuntimeError()
-        key = a.to_int()
 
-        if key not in self._amplitude_cache:
-            self._amplitude_cache[key] = self.protocol.estimate_overlap(a, n_jobs=self.n_workers).real
-        
-        return self._amplitude_cache[key]
+        if a not in self._amplitude_cache:
+            self._amplitude_cache[a] = self.protocol.estimate_overlap(a, n_jobs=self.n_workers).real
+
+        return self._amplitude_cache[a]

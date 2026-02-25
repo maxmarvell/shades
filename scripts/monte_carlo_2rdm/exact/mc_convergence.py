@@ -22,7 +22,7 @@ from shades.estimators import ExactEstimator
 from shades.utils import make_hydrogen_chain
 from shades.monte_carlo import MPSSampler, MonteCarloEstimator
 
-from utils import spinorb_to_spatial_chem, doubles_energy, total_energy_from_rdm12
+from shades.utils import spinorb_to_spatial_2rdm, doubles_energy, total_energy_from_rdms
 
 logging.basicConfig(
     level=logging.INFO,
@@ -114,7 +114,7 @@ def main():
 
             mc = MonteCarloEstimator(estimator, sampler)
             rdm2_mc = mc.estimate_2rdm(max_iters=n_iters)
-            rdm2 = spinorb_to_spatial_chem(rdm2_mc, norb)
+            rdm2 = spinorb_to_spatial_2rdm(rdm2_mc, norb)
 
             E_doubles = doubles_energy(rdm2, mf)
             rel_err = np.abs(E_double_ref - E_doubles) / np.abs(E_double_ref)
@@ -130,7 +130,7 @@ def main():
             results['rel_frob_rdm2'][i, j] = rel_frob
             results['max_abs_rdm2'][i, j] = max_abs
 
-            E = total_energy_from_rdm12(rdm1, rdm2, mf)
+            E = total_energy_from_rdms(rdm1, rdm2, mf)
             print(f"E: {E}, E_doubles = {E_doubles}, rel_err = {rel_err} ||dRDM2||_F = {rel_frob:.4e}")
 
             results['E_tot'][i, j] = E

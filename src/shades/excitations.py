@@ -1,6 +1,6 @@
 from typing import List, Callable, Literal, Union, Optional
 from dataclasses import dataclass
-from shades.utils import Bitstring
+
 import numpy as np
 from numpy.typing import NDArray
 from pyscf import scf
@@ -10,16 +10,10 @@ type SingleSpinCase = Literal["alpha", "beta"]
 type DoubleSpinCase = Literal["alpha-alpha", "beta-beta", "alpha-beta"]
 
 
-def get_hf_reference(mf: Union[scf.hf.RHF, scf.uhf.UHF]) -> Bitstring:
+def get_hf_reference(mf: Union[scf.hf.RHF, scf.uhf.UHF]) -> int:
     nalpha, nbeta = mf.mol.nelec
     norb = mf.mol.nao
-
-    # TODO migrate to just using integers instead of pointless bitstrings
-    # return sum([1 << i for i in range(nalpha)]) + sum([1 << (i + norb) for i in range(nbeta)])
-
-    alpha_string = [True] * nalpha + [False] * (norb - nalpha)
-    beta_string = [True] * nbeta + [False] * (norb - nbeta)
-    return Bitstring(alpha_string + beta_string, endianess="little")
+    return sum(1 << i for i in range(nalpha)) + sum(1 << (i + norb) for i in range(nbeta))
 
 
 @dataclass
@@ -29,7 +23,7 @@ class SingleExcitation:
     occ: int  # occupied orbital index
     virt: int  # virtual orbital index
     spin: SingleSpinCase  # 'alpha' or 'beta'
-    bitstring: Bitstring
+    bitstring: int
     n: int  # number of occ alpha or beta orbitals
 
     def __repr__(self) -> str:
@@ -60,9 +54,7 @@ def get_singles(
         virtual_alpha = list(range(n_alpha, norb))
         for i in occupied_alpha:
             for a in virtual_alpha:
-                excited_state = reference.copy()
-                excited_state[i] = False
-                excited_state[a] = True
+                excited_state = (reference & ~(1 << i)) | (1 << a)
                 excitations.append(
                     SingleExcitation(
                         occ=i, virt=a - n_alpha, spin="alpha", bitstring=excited_state, n=n_alpha
@@ -77,9 +69,7 @@ def get_singles(
 
         for i in occupied_beta:
             for a in virtual_beta:
-                excited_state = reference.copy()
-                excited_state[i] = False
-                excited_state[a] = True
+                excited_state = (reference & ~(1 << i)) | (1 << a)
                 excitations.append(
                     SingleExcitation(
                         occ=i - norb,
@@ -95,7 +85,7 @@ def get_singles(
 
 def singles_to_t1(
     excitations: List[SingleExcitation],
-    amplitude_fn: Callable[[Bitstring], np.float64],
+    amplitude_fn: Callable[[int], np.float64],
     nocc: int,
     nvirt: int,
 ) -> NDArray[np.float64]:
@@ -120,7 +110,7 @@ class DoubleExcitation:
     virt1: int
     virt2: int
     spin_case: DoubleSpinCase  # 'alpha-alpha', 'beta-beta', or 'alpha-beta'
-    bitstring: Bitstring
+    bitstring: int
     n1: int  # number of alpha or beta orbitals
     n2: int  # number of alpha or beta orbitals
 
@@ -186,8 +176,7 @@ def get_doubles(
                     for b in virtual_beta:
                         if a + norb == b and symmetry_restricted and isinstance(mf, scf.hf.RHF):
                             continue  # not allowed
-                        excited_state = reference.copy()
-                        excited_state[[i, j, a, b]] = [False, False, True, True]
+                        excited_state = (reference & ~(1 << i) & ~(1 << j)) | (1 << a) | (1 << b)
                         excitations.append(
                             DoubleExcitation(
                                 occ1=i,
@@ -205,8 +194,7 @@ def get_doubles(
         if symmetry_restricted and isinstance(mf, scf.hf.RHF):
             for i in occupied_alpha:
                 for a in virtual_alpha:
-                    excited_state = reference.copy()
-                    excited_state[[i, i + norb, a, a + norb]] = [False, False, True, True]
+                    excited_state = (reference & ~(1 << i) & ~(1 << (i + norb))) | (1 << a) | (1 << (a + norb))
                     excitations.append(
                         DoubleExcitation(
                             occ1=i,
@@ -229,8 +217,7 @@ def get_doubles(
                     idx_a = idx_a + 1 if symmetry_restricted else 0
                     for b in virtual_alpha[idx_a:]:
                         if a == b: continue
-                        excited_state = reference.copy()
-                        excited_state[[i, j, a, b]] = [False, False, True, True]
+                        excited_state = (reference & ~(1 << i) & ~(1 << j)) | (1 << a) | (1 << b)
                         excitations.append(
                             DoubleExcitation(
                                 occ1=i,
@@ -249,8 +236,7 @@ def get_doubles(
             for j in occupied_beta[idx_i + 1 :]:
                 for idx_a, a in enumerate(virtual_beta):
                     for b in virtual_beta[idx_a + 1 :]:
-                        excited_state = reference.copy()
-                        excited_state[[i, j, a, b]] = [False, False, True, True]
+                        excited_state = (reference & ~(1 << i) & ~(1 << j)) | (1 << a) | (1 << b)
                         excitations.append(
                             DoubleExcitation(
                                 occ1=i - norb,
@@ -269,7 +255,7 @@ def get_doubles(
 
 def doubles_to_t2(
     excitations: List[DoubleExcitation],
-    amplitude_fn: Callable[[Bitstring], np.float64],
+    amplitude_fn: Callable[[int], np.float64],
     nocc: Union[int, tuple[int, int]],
     nvirt: Union[int, tuple[int, int]],
     spin_case: DoubleSpinCase,
@@ -342,5 +328,5 @@ if __name__ == "__main__":
     state, _ = fci.solve()
 
     doubles_to_t2(
-        doubles, lambda b: state.data[b.to_int()].real, nocc_a, nocc_b, spin_case="alpha-alpha"
+        doubles, lambda b: state.data[b].real, nocc_a, nocc_b, spin_case="alpha-alpha"
     )

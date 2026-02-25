@@ -1,6 +1,6 @@
-from dataclasses import dataclass
 from typing import List
 import stim
+import qulacs
 
 import numpy as np
 from numpy.typing import NDArray
@@ -8,163 +8,41 @@ from typing import Union, Optional
 from pyscf import scf
 from pyscf import ao2mo
 
-from qiskit.quantum_info import Statevector
+def bitstring_to_stabilizers(value: int, n_qubits: int) -> List[stim.PauliString]:
+    """Convert an integer bitstring to a list of stabilizer generators.
 
-@dataclass
-class Bitstring():
+    Args:
+        value: Integer representing the computational basis state (little-endian).
+        n_qubits: Number of qubits.
 
-    array: NDArray[np.bool_]
-    endianess: str = 'little'
+    Returns:
+        List of stim.PauliString stabilizers, one per qubit.
+    """
+    out = []
+    for i in range(n_qubits):
+        label = ['I'] * n_qubits
+        label[i] = 'Z'
+        p = stim.PauliString(''.join(label))
+        if (value >> i) & 1:
+            p *= -1
+        out.append(p)
+    return out
 
-    def __post_init__(self):
-        """Validate endianness parameter and ensure numpy array."""
-        if self.endianess not in ('big', 'little'):
-            raise ValueError(f"endianess must be 'big' or 'little', got '{self.endianess}'")
-        if not isinstance(self.array, np.ndarray):
-            self.array = np.array(self.array, dtype=np.bool_)
 
-    @property
-    def size(self) -> int:
-        return len(self.array)
+def measurement_to_int(measurement) -> int:
+    """Convert a measurement result (list of bools) to an integer (little-endian)."""
+    value = 0
+    for i, bit in enumerate(measurement):
+        if bit:
+            value |= (1 << i)
+    return value
 
-    def __getitem__(self, key):
-        """Allow indexing as array[i]"""
-        result = self.array[key]
-        if isinstance(result, np.bool_):
-            return bool(result)
-        return result
-
-    def __setitem__(self, key, value):
-        """Allow item assignment as array[i] = value"""
-        self.array[key] = value
-
-    def __eq__(self, other):
-        """Check equality with another Bitstring."""
-        if not isinstance(other, Bitstring):
-            return False
-        return np.array_equal(self.array, other.array) and self.endianess == other.endianess
-
-    def __iter__(self):
-        """Allow iteration over bits."""
-        return iter(self.array)
-
-    def __len__(self):
-        """Allow len() to work."""
-        return len(self.array)
-
-    def to_string(self) -> str:
-        """Convert bitstring to string representation."""
-        if self.endianess == 'big':
-            return ''.join('1' if bit else '0' for bit in self.array)
-        else:
-            return ''.join('1' if bit else '0' for bit in self.array[::-1])
-
-    def to_stabilizers(self) -> List[stim.PauliString]:
-        """Convert to list of stabilizer generators."""
-        out = []
-        n = self.size
-        for i, bit in enumerate(self.array):
-            label = ['I'] * n
-            label[n - 1 - i] = 'Z'             
-            p = stim.PauliString(''.join(label))
-            if bit:
-                p *= -1                  
-            out.append(p)
-        return out
-
-    def to_int(self) -> int:
-        """Convert bitstring to integer.
-
-        For both endianness: to_string() already handles reversal, so we just convert.
-        """
-        if self.endianess == 'little':
-            value = sum((1 << i) if bit else 0 for i, bit in enumerate(self.array))
-        else:
-            n = len(self.array)
-            value = sum((1 << (n - 1 - i)) if bit else 0 for i, bit in enumerate(self.array))
-        return value
-
-    def to_array(self) -> NDArray[np.int_]:
-        """Convert to numpy array of integers (0s and 1s)."""
-        return self.array.astype(np.int_)
-    
-    def to_statevector(self) -> Statevector:
-        return Statevector(self.to_array())
-
-    @classmethod
-    def from_string(cls, s: str, endianess: str = 'little') -> 'Bitstring':
-        """Create a Bitstring from a string like '0101'.
-
-        Args:
-            s: Binary string (e.g., '0101')
-            endianess: 'little' (default) or 'big'
-        """
-        if endianess == "little":
-            bits = np.array([b == '1' for b in s[::-1]], dtype=np.bool_)
-        else:
-            bits = np.array([b == '1' for b in s], dtype=np.bool_)
-        return cls(bits, endianess=endianess)
-
-    @classmethod
-    def from_int(cls, value: int, size: int, endianess: str = 'little') -> 'Bitstring':
-        """Create a Bitstring from an integer with specified size.
-
-        Args:
-            value: Non-negative integer to convert
-            size: Number of bits in the output
-            endianess: 'big' (default) or 'little'
-
-        For big-endian: MSB is leftmost bit (standard binary)
-        For little-endian: array is stored reversed
-        """
-        bits = np.array([(value >> i) & 1 for i in range(size)], dtype=np.bool_)
-        if endianess == "big":
-            bits = bits[::-1]
-        return cls(bits, endianess=endianess)
-
-    @classmethod
-    def random(cls, size: int, rng=None, endianess: str = 'little') -> 'Bitstring':
-        """Create a random Bitstring of given size.
-
-        Args:
-            size: Number of bits
-            rng: Optional numpy random generator (for reproducibility)
-            endianess: 'big' (default) or 'little'
-
-        Returns:
-            Random Bitstring
-        """
-        if rng is None:
-            rng = np.random.default_rng()
-        bits = rng.choice([True, False], size=size).astype(np.bool_)
-        return cls(bits, endianess=endianess)
-
-    def copy(self) -> 'Bitstring':
-        """Return a deep copy of the Bitstring."""
-        return Bitstring(self.array.copy(), endianess=self.endianess)
-    
-    def convert_endian(self) -> 'Bitstring':
-        """Convert representation so integer value is preserved across endianness flip."""
-        target = 'little' if self.endianess == 'big' else 'big'
-        return Bitstring(self.array[::-1], endianess=target)
-    
-@dataclass
-class SingleExcitation:
-    """Represents a single excitation with its indices and bitstring."""
-    occ: int  # occupied orbital index
-    virt: int  # virtual orbital index
-    spin: str  # 'alpha' or 'beta'
-    bitstring: Bitstring
-    n: int # number of occ alpha or beta orbitals
-
-    def __repr__(self) -> str:
-        spin_symbol = 'α' if self.spin == 'alpha' else 'β'
-        return f"{self.occ}{spin_symbol} → {self.virt+self.n}{spin_symbol}"
 
 def gaussian_elimination(
     stabilizers: List[stim.PauliString],
-    ref_state: Bitstring,
-    target_state: Bitstring
+    ref_state: int,
+    target_state: int,
+    n_qubits: int,
 ) -> complex:
     """Compute the phase of overlap between a stabilizer and a target basis state.
 
@@ -172,19 +50,19 @@ def gaussian_elimination(
 
     Args:
         stabilizers: List of canonical stabilizers (reduced stabilizer matrix)
-        ref_state: Reference computational basis state (measurement outcome)
-        target_state: Target computational basis state for overlap computation
+        ref_state: Reference computational basis state as int (little-endian)
+        target_state: Target computational basis state as int (little-endian)
+        n_qubits: Number of qubits
 
     Returns:
         Complex phase factor for the overlap
     """
     phase = 1 + 0j
-    interm_state = ref_state.copy()
-    target_str = target_state.copy()
-    n_qubits = target_str.size
+    interm = ref_state
+    target = target_state
 
     for n in range(n_qubits):
-        if target_str[n] != interm_state[n]:
+        if ((target >> n) & 1) != ((interm >> n) & 1):
             for m in range(len(stabilizers)):
                 stabilizer = stabilizers[m]
                 x_bits, _ = stabilizer.to_numpy()
@@ -198,30 +76,31 @@ def gaussian_elimination(
                         break
 
                 if all_left_false:
-                    interm_state, phase = apply_stabilizer_to_state(interm_state, stabilizer, phase)
+                    interm, phase = apply_stabilizer_to_state(interm, stabilizer, phase, n_qubits)
                     break
 
         # no overlap
-        if target_str[n] != interm_state[n]: return 0j
+        if ((target >> n) & 1) != ((interm >> n) & 1): return 0j
 
     return phase
 
 def apply_stabilizer_to_state(
-        state: Bitstring,
+        state: int,
         stabilizer: stim.PauliString,
-        phase: complex
-    ) -> tuple[Bitstring, complex]:
+        phase: complex,
+        n_qubits: int,
+    ) -> tuple[int, complex]:
         """Apply a Pauli string (stabilizer) to a computational basis state.
 
         Args:
-            state: Computational basis state as Bitstring object
+            state: Computational basis state as int (little-endian)
             stabilizer: Pauli string to apply
             phase: Accumulated phase factor
+            n_qubits: Number of qubits
 
         Returns:
             Tuple of (new_state, new_phase)
         """
-        n_qubits = state.size
         post_state = state
 
         # Apply the stabilizer's sign/phase
@@ -230,15 +109,15 @@ def apply_stabilizer_to_state(
         # Apply each Pauli operator
         for n in range(n_qubits):
             pauli = stabilizer[n]
-            bit = post_state[n]
+            bit = (post_state >> n) & 1
 
             if pauli == 1: # X
-                post_state[n] = not bit
+                post_state ^= (1 << n)
             elif pauli == 2: # Y
-                post_state[n] = not bit
-                new_phase = new_phase * (1j) * (-1) ** (int(bit))
+                post_state ^= (1 << n)
+                new_phase = new_phase * (1j) * (-1) ** bit
             elif pauli == 3: # Z
-                new_phase = new_phase * (-1) ** (int(bit))
+                new_phase = new_phase * (-1) ** bit
             elif pauli != 0: # I
                 raise ValueError(f"Unrecognized pauli operator {pauli}.")
 
@@ -435,6 +314,80 @@ def compute_correlation_energy(
 
     return e_singles + e_doubles
 
+
+def spinorb_to_spatial_2rdm(
+    rdm2_so: np.ndarray,
+    norb: int,
+) -> np.ndarray:
+    """Convert a spin-orbital 2-RDM to a spatial-orbital 2-RDM in chemist's notation.
+
+    Assumes spin-orbital ordering [α₀, ..., α_{n-1}, β₀, ..., β_{n-1}].
+    Sums over αα, ββ, and αβ spin blocks with the appropriate transpositions.
+
+    Args:
+        rdm2_so: Spin-orbital 2-RDM, shape (2*norb, 2*norb, 2*norb, 2*norb).
+        norb: Number of spatial orbitals.
+
+    Returns:
+        Spatial 2-RDM in chemist's notation, shape (norb, norb, norb, norb).
+    """
+    rdm2_aa = rdm2_so[:norb, :norb, :norb, :norb]
+    rdm2_ab = rdm2_so[:norb, norb:, :norb, norb:]
+    rdm2_bb = rdm2_so[norb:, norb:, norb:, norb:]
+
+    dm2aa = rdm2_aa.transpose(0, 2, 1, 3)
+    dm2ab = rdm2_ab.transpose(0, 2, 1, 3)
+    dm2bb = rdm2_bb.transpose(0, 2, 1, 3)
+    return dm2aa + dm2bb + dm2ab + dm2ab.transpose(1, 0, 3, 2)
+
+
+def doubles_energy(
+    rdm2: np.ndarray,
+    mf: Union[scf.hf.RHF, scf.uhf.UHF],
+) -> float:
+    """Compute the two-electron energy from a spatial 2-RDM.
+
+    E₂ = 0.5 * Σ_{pqrs} g_{pqrs} Γ_{pqrs}
+
+    Args:
+        rdm2: Spatial 2-RDM in chemist's notation, shape (norb, norb, norb, norb).
+        mf: PySCF mean-field object (RHF or UHF).
+
+    Returns:
+        Two-electron energy in Hartrees.
+    """
+    norb = mf.mo_coeff.shape[1] if isinstance(mf, scf.hf.RHF) else mf.mo_coeff[0].shape[1]
+    mo = mf.mo_coeff if isinstance(mf, scf.hf.RHF) else mf.mo_coeff[0]
+    eri = ao2mo.restore(1, ao2mo.kernel(mf.mol, mo), norb)
+    return 0.5 * np.einsum("ijkl,ijkl->", eri, rdm2)
+
+
+def total_energy_from_rdms(
+    dm1: np.ndarray,
+    dm2: np.ndarray,
+    mf: Union[scf.hf.RHF, scf.uhf.UHF],
+) -> float:
+    """Compute the total electronic energy from 1-RDM and 2-RDM.
+
+    E = Σ_{pq} h_{pq} γ_{pq} + 0.5 * Σ_{pqrs} g_{pqrs} Γ_{pqrs} + E_nuc
+
+    Args:
+        dm1: Spatial 1-RDM, shape (norb, norb).
+        dm2: Spatial 2-RDM in chemist's notation, shape (norb, norb, norb, norb).
+        mf: PySCF mean-field object (RHF or UHF).
+
+    Returns:
+        Total energy in Hartrees.
+    """
+    mo = mf.mo_coeff if isinstance(mf, scf.hf.RHF) else mf.mo_coeff[0]
+    h1 = mo.T @ mf.get_hcore() @ mo
+    norb = h1.shape[0]
+    eri = ao2mo.restore(1, ao2mo.kernel(mf.mol, mo), norb)
+    e1 = np.einsum("pq,pq->", h1, dm1)
+    e2 = 0.5 * np.einsum("pqrs,pqrs->", eri, dm2)
+    return e1 + e2 + mf.mol.energy_nuc()
+
+
 def pauli_terms_to_matrix(
         hamiltonian: List[tuple[str, float]]
     ) -> NDArray[np.complex128]:
@@ -494,6 +447,38 @@ def pauli_terms_to_matrix(
         H += coeff * term_matrix
 
     return H
+
+def tableau_to_qulacs_circuit(tab: stim.Tableau, n_qubits: int) -> qulacs.QuantumCircuit:
+    """Convert a stim.Tableau directly to a qulacs QuantumCircuit.
+
+    Uses stim's canonical decomposition into {H, S, CX} gates,
+    bypassing the Qiskit/QASM intermediate representation.
+
+    Note: stim batches gate targets, e.g. ``S 0 0 1`` means apply S
+    to qubit 0 twice then to qubit 1. Two-qubit gates (CX) are batched
+    in pairs of targets.
+    """
+    stim_circuit = tab.to_circuit()
+    circuit = qulacs.QuantumCircuit(n_qubits)
+
+    for op in stim_circuit:
+        name = op.name
+        targets = [t.qubit_value for t in op.targets_copy()]
+
+        if name == "H":
+            for q in targets:
+                circuit.add_H_gate(q)
+        elif name == "S":
+            for q in targets:
+                circuit.add_S_gate(q)
+        elif name == "CX":
+            for i in range(0, len(targets), 2):
+                circuit.add_CNOT_gate(targets[i], targets[i + 1])
+        else:
+            raise ValueError(f"Unexpected gate in Clifford decomposition: {name}")
+
+    return circuit
+
 
 if __name__ == "__main__":
 

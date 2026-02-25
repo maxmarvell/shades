@@ -41,7 +41,7 @@ N_JOBS = 8  # Number of parallel jobs for estimation
 USE_QULACS = True  # Use Qulacs backend for faster simulation
 
 # Molecular system parameters
-N_HYDROGEN_ATOMS = 8  # Number of hydrogen atoms in chain
+N_HYDROGEN_ATOMS = 6  # Number of hydrogen atoms in chain
 BOND_LENGTH = 1.5  # Bond length in Angstroms
 BASIS_SET = "sto-3g"  # Basis set for quantum chemistry
 

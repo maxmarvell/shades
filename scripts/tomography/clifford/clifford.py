@@ -1,0 +1,137 @@
+"""H2 Potential Energy Surface via Clifford Shadow Tomography.
+
+This script computes the potential energy surface (PES) of an n hydrogen chain (nH)
+as a function of internuclear distance using Clifford shadow state tomography. The results
+are compared against exact Full Configuration Interaction (FCI) calculations to
+demonstrate the accuracy and statistical properties of the shadow tomography method.
+
+The workflow:
+1. For each interatomic distance:
+   - Build H chain molecule with specified geometry
+   - Compute Hartree-Fock reference and molecular Hamiltonian
+   - Run exact FCI calculation for ground truth
+   - Perform multiple shadow tomography estimations
+2. Save results to disk for further analysis
+"""
+
+import os
+import json
+from datetime import datetime
+from pyscf import gto, scf
+from shades.estimators import ShadowEstimator
+from shades.solvers import FCISolver
+from shades.utils import make_hydrogen_chain
+import numpy as np
+import logging
+
+N_HYDROGEN = 8
+INTERATOMIC_DISTANCES = [0.50, 0.75, 1.00, 1.25, 1.50, 1.75, 2.00, 2.25]
+BASIS_SET = "sto-3g"
+
+N_SHADOWS = 1000
+N_K_ESTIMATORS = 20
+N_SIMULATIONS = 100
+N_JOBS = 8
+
+RUN_COMMENT = "Preliminary run to verify correctness of Clifford shadow sampling."
+OUTPUT_DIR = f"./results/tomography/clifford/pes/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}/"
+
+logging.basicConfig(
+      level=logging.INFO,
+      format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+      handlers=[logging.StreamHandler()],
+      force=True,
+)
+logger = logging.getLogger(__name__)
+
+def main():
+    """Run H stretching analysis and save PES data."""
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    exact_fci = np.empty(len(INTERATOMIC_DISTANCES))
+    exact_hf = np.empty(len(INTERATOMIC_DISTANCES))
+
+    estimated_energies = np.empty((len(INTERATOMIC_DISTANCES), N_SIMULATIONS))
+
+    logger.info("=" * 80)
+    logger.info("H2 Potential Energy Surface via Clifford Shadow Tomography")
+    logger.info("=" * 80)
+    logger.info("Configuration:")
+    logger.info(f"  - Samples per run:       {N_SHADOWS}")
+    logger.info(f"  - K-estimators:          {N_K_ESTIMATORS}")
+    logger.info(f"  - Independent runs:      {N_SIMULATIONS}")
+    logger.info(f"  - Number of H atoms:     {N_HYDROGEN}")
+    logger.info(f"  - Distances (Å):         {INTERATOMIC_DISTANCES}")
+    logger.info("=" * 80)
+
+    for j, d in enumerate(INTERATOMIC_DISTANCES):
+        logger.info(f"[{j+1}/{len(INTERATOMIC_DISTANCES)}] Processing distance = {d:.2f} Å")
+
+        energies = np.empty(N_SIMULATIONS)
+
+        mol_string = make_hydrogen_chain(N_HYDROGEN, d)
+        mol = gto.Mole()
+        mol.build(atom=mol_string, basis=BASIS_SET, verbose=0)
+
+        mf = scf.RHF(mol)
+        mf.run()
+
+        fci_solver = FCISolver(mf)
+        estimator = ShadowEstimator(mf, solver=fci_solver, verbose=4)
+        logger.info(f"  FCI Energy (exact): {estimator.E_exact:.8f} Ha")
+
+        logger.info(f"  Running {N_SIMULATIONS} shadow estimations...")
+        for i in range(N_SIMULATIONS):
+            energies[i], _, _, _ = estimator.run(
+                n_samples=N_SHADOWS,
+                n_k_estimators=N_K_ESTIMATORS,
+                n_jobs=N_JOBS,
+            )
+            estimator.clear_sample()
+
+            if (i + 1) % 10 == 0:
+                logger.info(f"    Completed {i+1}/{N_SIMULATIONS} runs")
+
+        estimated_energies[j] = energies
+
+        exact_fci[j] = estimator.E_exact
+        exact_hf[j] = estimator.E_hf
+
+        error = np.mean(energies) - exact_fci[j]
+        logger.info(f"  Shadow Mean:  {np.mean(energies):.8f} Ha")
+        logger.info(f"  Shadow Std:   {np.std(energies):.8f} Ha")
+        logger.info(f"  Mean Error:   {error:+.2e} Ha")
+
+    results = {
+        'energy': estimated_energies,
+        'fci_energy': exact_fci,
+        'hf_energy': exact_hf,
+        "interatomic_distances": np.array(INTERATOMIC_DISTANCES),
+    }
+
+    npz_path = os.path.join(OUTPUT_DIR, "data.npz")
+
+    metadata = {
+        "system": "H chain",
+        "interatomic_distances_angstrom": INTERATOMIC_DISTANCES,
+        "basis_set": str(BASIS_SET),
+        "n_runs": N_SIMULATIONS,
+        "n_hydrogen": N_HYDROGEN,
+        "n_shadow_samples": N_SHADOWS,
+        "n_k_estimators": N_K_ESTIMATORS,
+        "n_jobs": N_JOBS,
+        "comments": RUN_COMMENT,
+    }
+
+    np.savez_compressed(npz_path, **results)
+    logger.info(f"Saved: {npz_path}")
+
+    metadata_path = os.path.join(OUTPUT_DIR, "metadata.json")
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    logger.info(f"Saved: {metadata_path}")
+
+
+if __name__ == "__main__":
+    main()

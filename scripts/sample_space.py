@@ -21,8 +21,7 @@ import matplotlib.pyplot as plt
 from typing import Dict, Tuple, List
 import qulacs
 
-from shades.tomography import _tableau_to_qiskit_clifford, _clifford_to_qulacs_circuit
-from shades.utils import Bitstring, compute_x_rank, canonicalize
+from shades.utils import bitstring_to_stabilizers, compute_x_rank, canonicalize, tableau_to_qulacs_circuit
 
 
 def generate_random_state(n_qubits: int, seed: int = None) -> Statevector:
@@ -42,37 +41,33 @@ def generate_random_state(n_qubits: int, seed: int = None) -> Statevector:
 
 def sample_clifford_and_measure(
     state: Statevector,
-) -> Tuple[stim.Tableau, Bitstring]:
+) -> Tuple[stim.Tableau, int]:
     """Apply a random Clifford and measure in computational basis.
 
     Args:
         state: Input quantum state
-        use_qulacs: Use Qulacs for faster simulation
 
     Returns:
-        Tuple of (Clifford tableau, measurement bitstring)
+        Tuple of (Clifford tableau, measurement outcome as int)
     """
     n_qubits = state.num_qubits
 
     # Generate random Clifford tableau
     tableau = stim.Tableau.random(n_qubits)
 
-    # Convert to Qiskit Clifford and apply to state
-    cliff = _tableau_to_qiskit_clifford(tableau)
-
     qulacs_state = qulacs.QuantumState(n_qubits)
     qulacs_state.load(state)
-    circuit = _clifford_to_qulacs_circuit(cliff, n_qubits)
+    circuit = tableau_to_qulacs_circuit(tableau, n_qubits)
     circuit.update_quantum_state(qulacs_state)
     sample = qulacs_state.sampling(1)[0]
-    bitstring = Bitstring.from_int(sample, size=n_qubits, endianess='little')
 
-    return tableau, bitstring
+    return tableau, sample
 
 
 def create_stabilizer_snapshot(
     tableau: stim.Tableau,
-    bitstring: Bitstring
+    bitstring: int,
+    n_qubits: int = None,
 ) -> stim.Tableau:
     """Create a stabilizer snapshot from a Clifford and measurement.
 
@@ -81,13 +76,17 @@ def create_stabilizer_snapshot(
 
     Args:
         tableau: The Clifford tableau that was applied
-        bitstring: The measurement outcome
+        bitstring: The measurement outcome as int (little-endian)
+        n_qubits: Number of qubits (derived from tableau if not given)
 
     Returns:
         Stabilizer tableau representing the snapshot
     """
+    if n_qubits is None:
+        n_qubits = len(tableau)
+
     # Convert measurement to stabilizers (Z_i eigenstates)
-    stabilizers = bitstring.to_stabilizers()
+    stabilizers = bitstring_to_stabilizers(bitstring, n_qubits)
 
     # Transform back through inverse Clifford
     U_inv = tableau.inverse()

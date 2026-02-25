@@ -30,12 +30,12 @@ DEFAULT_OUTPUT_DIR = f"./results/rdm2_scaling/{datetime.now().strftime('%Y-%m-%d
 
 # Fixed parameters
 N_RUNS = 10
-N_MC_ITERS = 10000
-N_SHADOWS = 10000
-N_K_ESTIMATORS = 40
+N_MC_ITERS = 100
+N_SHADOWS = 5000
+N_K_ESTIMATORS = 20
 
 # System size sweep
-N_HYDROGEN = [2, 4, 6, 8]
+N_HYDROGEN = [8]
 BOND_LENGTH = 1.5
 BASIS_SET = "sto-3g"
 
