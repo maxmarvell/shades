@@ -38,7 +38,7 @@ N_MC_ITERS = 5000
 
 BOND_DIMS = [10, 25, 50, 100, 200]
 
-N_HYDROGEN = 8
+N_HYDROGEN = 6
 BOND_LENGTH = 1.5
 BASIS_SET = "sto-3g"
 
@@ -54,7 +54,7 @@ def det_to_int(det):
 
 def compute_distribution_metrics(fci_probs, mps_sampler):
     mps_dict = {}
-    for det, prob in zip(mps_sampler.dets, mps_sampler.probs):
+    for det, prob in zip(*mps_sampler.get_distribution()):
         key = det_to_int(det)
         mps_dict[key] = mps_dict.get(key, 0.0) + prob
 
@@ -129,7 +129,7 @@ def main():
         tvds[bd_idx] = tvd
         missing_masses[bd_idx] = mm
         print(f"  Fidelity = {fid:.10f}, TVD = {tvd:.6e}, missing mass = {mm:.6e}")
-        print(f"  Num MPS dets: {len(sampler.dets)}")
+        print(f"  Num MPS dets: {len(sampler.get_distribution()[0])}")
 
         for j in range(N_RUNS):
             mc = MonteCarloEstimator(estimator, sampler)

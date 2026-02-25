@@ -61,7 +61,7 @@ def det_to_int(det):
 def compute_fidelity(fci_probs, mps_sampler, n_qubits):
     """Compute fidelity between FCI and MPS probability distributions."""
     mps_dict = {}
-    for det, prob in zip(mps_sampler.dets, mps_sampler.probs):
+    for det, prob in zip(*mps_sampler.get_distribution()):
         key = det_to_int(det)
         mps_dict[key] = mps_dict.get(key, 0.0) + prob
 

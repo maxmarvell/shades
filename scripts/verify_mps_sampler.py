@@ -75,8 +75,9 @@ def main():
         mps = MPSSampler(mf)
 
         # Build MPS probability dict
+        mps_dets, mps_probs = mps.get_distribution()
         mps_dict = {}
-        for det, prob in zip(mps.dets, mps.probs):
+        for det, prob in zip(mps_dets, mps_probs):
             key = det_to_int(det)
             mps_dict[key] = mps_dict.get(key, 0.0) + prob
 
@@ -128,7 +129,7 @@ def main():
             print(f"  {bs:<{n_qubits+2}} {p_fci:>12.6e} {p_mps:>12.6e} {ratio:>10.4f} {p_mps - p_fci:>+12.4e}")
 
         # Check for duplicate determinant mappings in MPS
-        int_keys = [det_to_int(d) for d in mps.dets]
+        int_keys = [det_to_int(d) for d in mps_dets]
         n_unique = len(set(int_keys))
         if n_unique != len(int_keys):
             print(f"\n  WARNING: {len(int_keys) - n_unique} duplicate determinant mappings in MPS!")

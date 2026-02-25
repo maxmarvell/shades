@@ -6,8 +6,8 @@ from numpy.typing import NDArray
 from pyscf import scf
 from pyscf.ci.cisd import tn_addrs_signs
 
-type SingleSpinCase = Literal["alpha", "beta"]
-type DoubleSpinCase = Literal["alpha-alpha", "beta-beta", "alpha-beta"]
+SingleSpinCase = Literal["alpha", "beta"]
+DoubleSpinCase = Literal["alpha-alpha", "beta-beta", "alpha-beta"]
 
 
 def get_hf_reference(mf: Union[scf.hf.RHF, scf.uhf.UHF]) -> int:

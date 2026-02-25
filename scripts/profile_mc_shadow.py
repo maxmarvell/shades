@@ -71,7 +71,7 @@ def profile_system(n_h):
     mps_sampler = MPSSampler(mf)
     t_mps = time.perf_counter() - t0
     print(f"  [2] MPS sampler (DMRG+CSF):   {t_mps:10.3f} s")
-    print(f"       num determinants:         {len(mps_sampler.dets)}")
+    print(f"       num determinants:         {len(mps_sampler.get_distribution()[0])}")
 
     # --- Stage 3: Shadow sampling ---
     shadow1 = ShadowEstimator(mf, fci_solver)
@@ -200,7 +200,7 @@ def profile_system(n_h):
         "t_mps_sample_us": t_mps_sample * 1e6,
         "t_mc_total": t_mc,
         "t_mc_per_iter_ms": t_mc / N_MC_ITERS * 1e3,
-        "n_mps_dets": len(mps_sampler.dets),
+        "n_mps_dets": len(mps_sampler.get_distribution()[0]),
     }
 
 

@@ -60,7 +60,7 @@ def det_to_int(det):
 
 def compute_distribution_metrics(fci_probs, mps_sampler):
     mps_dict = {}
-    for det, prob in zip(mps_sampler.dets, mps_sampler.probs):
+    for det, prob in zip(*mps_sampler.get_distribution()):
         key = det_to_int(det)
         mps_dict[key] = mps_dict.get(key, 0.0) + prob
 

@@ -204,13 +204,14 @@ class MetropolisSampler(AbstractStochasticSampler):
 
 class MPSSampler(AbstractStochasticSampler):
 
-    def __init__(self, mf: Union[RHF, UHF], max_bond_dim: int = 200):
+    def __init__(self, mf: Union[RHF, UHF], max_bond_dim: int = 200, batch_size: int = 1000):
 
         if isinstance(mf, UHF):
             raise NotImplementedError()
 
-        norb = mf.mo_coeff.shape[1]
+        self.norb = mf.mo_coeff.shape[1]
         nelec = mf.mol.nelectron
+        self.batch_size = batch_size
 
         h1e = mf.mo_coeff.T @ mf.get_hcore() @ mf.mo_coeff
         eri = ao2mo.kernel(mf.mol, mf.mo_coeff)
@@ -221,7 +222,7 @@ class MPSSampler(AbstractStochasticSampler):
             schedule.append(max_bond_dim)
 
         self.driver = DMRGDriver(scratch="./tmp", symm_type=SymmetryTypes.SZ)
-        self.driver.initialize_system(n_sites=norb, n_elec=nelec, spin=0)
+        self.driver.initialize_system(n_sites=self.norb, n_elec=nelec, spin=0)
         self.mpo = self.driver.get_qc_mpo(h1e=h1e, g2e=eri, ecore=e_core, iprint=0)
         self.ket = self.driver.get_random_mps(tag="KET", bond_dim=max_bond_dim + 50, nroots=1)
         self.driver.dmrg(
@@ -233,33 +234,50 @@ class MPSSampler(AbstractStochasticSampler):
             iprint=0
         )
 
-        # TODO need to probably truncate this at some point
-        self.dets, coeffs = self.driver.get_csf_coefficients(
-            self.ket,
-            cutoff=0,
-            iprint=0
-        )
+        self._buffer_dets: List[int] = []
+        self._buffer_probs: List[float] = []
+        self._refill_buffer()
 
-        probs = np.abs(coeffs)**2
-        self.probs = probs / probs.sum()
-
-    def sample(self) -> tuple[int, float]:
-        
-        idx = np.random.choice(len(self.dets), p=self.probs)
-        det = self.dets[idx]
-
-        norb = det.shape[0]
+    def _det_to_int(self, det: np.ndarray) -> int:
+        norb = self.norb
         alpha = det & 1
         beta = (det >> 1) & 1
-
-
         res = sum(1 << i for i in range(norb) if alpha[i] == 1)
-        res += sum (1 << i for i in range(norb, 2*norb) if beta[i-norb] == 1)
+        res += sum(1 << i for i in range(norb, 2 * norb) if beta[i - norb] == 1)
+        return res
 
-        return res, self.probs[idx]
+    def _refill_buffer(self):
+        dets, coeffs = self.driver.sample_csf_coefficients(
+            self.ket, n_sample=self.batch_size, iprint=0
+        )
+        probs = np.abs(coeffs) ** 2
+        self._buffer_dets = [self._det_to_int(d) for d in dets]
+        self._buffer_probs = probs.tolist()
+        self._buffer_idx = 0
+
+    def get_distribution(self, cutoff: float = 1e-12):
+        """Extract the full determinant distribution for analysis.
+
+        Returns (dets, probs) arrays like the old implementation, using
+        get_csf_coefficients with the given cutoff.
+        """
+        dets, coeffs = self.driver.get_csf_coefficients(
+            self.ket, cutoff=cutoff, iprint=0
+        )
+        probs = np.abs(coeffs) ** 2
+        probs /= probs.sum()
+        return dets, probs
+
+    def sample(self) -> tuple[int, float]:
+        if self._buffer_idx >= len(self._buffer_dets):
+            self._refill_buffer()
+        det = self._buffer_dets[self._buffer_idx]
+        prob = self._buffer_probs[self._buffer_idx]
+        self._buffer_idx += 1
+        return det, prob
 
 
-type IndependentEstimators = tuple[AbstractEstimator, AbstractEstimator]
+IndependentEstimators = tuple[AbstractEstimator, AbstractEstimator]
 
 
 class MonteCarloEstimator:
@@ -376,8 +394,6 @@ class MonteCarloEstimator:
 
         return np.median(batch_means, axis=0)
 
-        return gamma
-
 
 if __name__ == "__main__":
     
@@ -416,7 +432,8 @@ if __name__ == "__main__":
         res += sum (1 << i for i in range(norb, 2*norb) if beta[i-norb] == 1)
         return res
 
-    mps_coeffs = {format(_block_2_to_idx(k), f"0{n_qubits}b")[::-1]: v for k, v in zip(mps.dets, mps.probs)}
+    mps_dets, mps_probs = mps.get_distribution()
+    mps_coeffs = {format(_block_2_to_idx(k), f"0{n_qubits}b")[::-1]: v for k, v in zip(mps_dets, mps_probs)}
     # fci_coeffs = dict(zip(idx, fci.state.data[idx]))
     # mps_coeffs = dict(zip(mps.dets, mps.probs))
 
