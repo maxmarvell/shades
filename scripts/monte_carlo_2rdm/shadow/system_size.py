@@ -1,4 +1,7 @@
-"""Monte Carlo RDM2 System Size Scaling Analysis."""
+"""Monte Carlo RDM2 System Size Scaling Analysis.
+
+Uses median-of-means estimation with convergence checking.
+"""
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -24,18 +27,25 @@ logging.basicConfig(
     force=True,
 )
 
-RUN_COMMENT = "First test run to observe scaling with system size."
+RUN_COMMENT = "System size scaling with median-of-means and convergence checking."
 
 DEFAULT_OUTPUT_DIR = f"./results/rdm2_scaling/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}/"
 
 # Fixed parameters
 N_RUNS = 10
-N_MC_ITERS = 100
+N_MC_ITERS = 100000
 N_SHADOWS = 5000
 N_K_ESTIMATORS = 20
+N_MC_BATCHES = 1000
+MPS_BOND_DIM = 300
+MPS_PROB_CUTOFF = 1e-6
+
+# Convergence checking
+CONV_WINDOW = 10       # number of batch checkpoints to compare over
+CONV_THRESHOLD = 1e-4  # relative change threshold
 
 # System size sweep
-N_HYDROGEN = [8]
+N_HYDROGEN = [4, 6, 8]
 BOND_LENGTH = 1.5
 BASIS_SET = "sto-3g"
 
@@ -58,7 +68,9 @@ def main():
     print("=" * 70)
     print(f"System sizes (N_H): {N_HYDROGEN}")
     print(f"Shadow samples: {N_SHADOWS}")
-    print(f"MC iterations: {N_MC_ITERS}")
+    print(f"MC iterations: {N_MC_ITERS} ({N_MC_BATCHES} batches of {N_MC_ITERS // N_MC_BATCHES})")
+    print(f"MPS bond dimension: {MPS_BOND_DIM}")
+    print(f"Convergence: rel change < {CONV_THRESHOLD} over {CONV_WINDOW} batches")
     print(f"Runs per system size: {N_RUNS}")
 
     # Store results per system size
@@ -112,9 +124,10 @@ def main():
             'rel_err_E2': np.empty(N_RUNS, dtype=np.float64),
             'rel_frob_rdm2': np.empty(N_RUNS, dtype=np.float64),
             'max_abs_rdm2': np.empty(N_RUNS, dtype=np.float64),
+            'converged_at': np.full(N_RUNS, N_MC_ITERS, dtype=int),
         }
 
-        sampler = MPSSampler(mf)
+        sampler = MPSSampler(mf, max_bond_dim=MPS_BOND_DIM, prob_cutoff=MPS_PROB_CUTOFF)
         shadow1 = ShadowEstimator(mf, fci_solver)
         shadow2 = ShadowEstimator(mf, fci_solver)
 
@@ -125,8 +138,33 @@ def main():
             shadow2.sample(N_SHADOWS // 2, N_K_ESTIMATORS)
             estimator = (shadow1, shadow2)
 
+            # Convergence tracking
+            e2_history = []
+            final_iter = [N_MC_ITERS]
+
+            def on_batch(i, gamma, _e2h=e2_history, _fi=final_iter):
+                rdm2 = spinorb_to_spatial_chem(gamma, norb)
+                E2 = doubles_energy(rdm2, mf)
+                _e2h.append(E2)
+
+                if len(_e2h) >= CONV_WINDOW:
+                    old_val = _e2h[-CONV_WINDOW]
+                    new_val = _e2h[-1]
+                    if abs(old_val) > 1e-15:
+                        rel_change = abs(new_val - old_val) / abs(old_val)
+                    else:
+                        rel_change = abs(new_val - old_val)
+
+                    if rel_change < CONV_THRESHOLD:
+                        _fi[0] = i + 1
+                        raise StopIteration
+
             mc = MonteCarloEstimator(estimator, sampler)
-            rdm2_mc = mc.estimate_2rdm(max_iters=N_MC_ITERS)
+            rdm2_mc = mc.estimate_2rdm(
+                max_iters=N_MC_ITERS,
+                n_batches=N_MC_BATCHES,
+                callback=on_batch,
+            )
             rdm2 = spinorb_to_spatial_chem(rdm2_mc, norb)
 
             E_doubles = doubles_energy(rdm2, mf)
@@ -138,13 +176,20 @@ def main():
             max_abs = np.max(np.abs(diff))
 
             E = total_energy_from_rdm12(rdm1, rdm2, mf)
-            print(f"E: {E:.6f}, E_doubles = {E_doubles:.6f}, rel_err = {rel_err:.4e}, ||dRDM2||_F = {rel_frob:.4e}")
+
+            conv_status = "converged" if final_iter[0] < N_MC_ITERS else "max iters"
+            print(
+                f"E: {E:.6f}, E_doubles = {E_doubles:.6f}, "
+                f"rel_err = {rel_err:.4e}, ||dRDM2||_F = {rel_frob:.4e} "
+                f"({conv_status} @ {final_iter[0]})"
+            )
 
             results['E_tot'][j] = E
             results['E_doubles'][j] = E_doubles
             results['rel_err_E2'][j] = rel_err
             results['rel_frob_rdm2'][j] = rel_frob
             results['max_abs_rdm2'][j] = max_abs
+            results['converged_at'][j] = final_iter[0]
 
             shadow1.clear_sample()
             shadow2.clear_sample()
@@ -170,6 +215,10 @@ def main():
         "n_mc_iters": N_MC_ITERS,
         "n_shadow_samples": N_SHADOWS,
         "n_k_estimators": int(N_K_ESTIMATORS),
+        "n_mc_batches": int(N_MC_BATCHES),
+        "mps_bond_dim": int(MPS_BOND_DIM),
+        "conv_window": int(CONV_WINDOW),
+        "conv_threshold": float(CONV_THRESHOLD),
         "comments": RUN_COMMENT,
         "reference_data": {str(k): {kk: float(vv) for kk, vv in v.items()}
                           for k, v in reference_data.items()},

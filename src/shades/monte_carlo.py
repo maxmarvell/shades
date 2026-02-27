@@ -1,6 +1,11 @@
 from itertools import product, combinations
+from functools import lru_cache
+from multiprocessing import Pool
 from typing import List, Tuple, Callable, Any, Optional, Union
+import logging
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 from abc import ABC, abstractmethod
 import random
@@ -11,16 +16,18 @@ from pyblock2.driver.core import DMRGDriver, SymmetryTypes
 
 from shades.estimators import AbstractEstimator
 
+
+@lru_cache(maxsize=4096)
 def _gen_single_site_hops(
-    reference: int, 
+    reference: int,
     n_qubits: int,
     symm_type: str = 'SZ'
-) -> Tuple[List[int], List[Tuple[int, int]]]:
+) -> Tuple[Tuple[int, ...], Tuple[Tuple[int, int], ...]]:
     """
     Given a reference single slater determinant as a bitstring, generate all
     possible nearest neighbours and the hop required to get there.
     """
-    
+
     assert n_qubits % 2 == 0
 
     res = []
@@ -31,26 +38,27 @@ def _gen_single_site_hops(
     alpha_hops = [(o, v) for o, v in product(alpha_occ, alpha_vac)]
     res += [reference ^ (1 << i) ^ (1 << j) for i, j in alpha_hops]
 
-    if symm_type == 'SU2': return res, alpha_hops
-    
+    if symm_type == 'SU2': return tuple(res), tuple(alpha_hops)
+
     beta_occ = [i for i in range(n_spatial, n_qubits) if (reference >> i) & 1]
     beta_vac = [i for i in range(n_spatial, n_qubits) if not (reference >> i) & 1]
     beta_hops = [(o, v) for o, v in product(beta_occ, beta_vac)]
     res += [reference ^ (1 << i) ^ (1 << j) for i in beta_occ for j in beta_vac]
-    
-    return res, alpha_hops + beta_hops
+
+    return tuple(res), tuple(alpha_hops + beta_hops)
 
 
+@lru_cache(maxsize=4096)
 def _gen_double_site_hops(
-    reference: int, 
+    reference: int,
     n_qubits: int,
     symm_type: str = 'SZ'
-) -> Tuple[List[int], List[Tuple[Tuple[int, int], Tuple[int, int]]]]:
+) -> Tuple[Tuple[int, ...], Tuple[Tuple[Tuple[int, int], Tuple[int, int]], ...]]:
     """
     Given a reference single slater determinant as a bitstring, generate all
     possible next-nearest nearest neighbours and the hops required to get there.
     """
-    
+
     #TODO: not tested for UHF where n_alpha and n_beta are not the same
     assert n_qubits % 2 == 0
     norb = n_qubits // 2
@@ -67,7 +75,7 @@ def _gen_double_site_hops(
     alpha_beta = [(o, v) for o, v in product(product(alpha_occ, beta_occ), product(alpha_vac, beta_vac))]
     res += [reference ^ (1 << i[0]) ^ (1 << i[1]) ^ (1 << j[0]) ^ (1 << j[1]) for i, j in alpha_beta]
 
-    if symm_type == 'SU2': return res, double_alpha + alpha_beta
+    if symm_type == 'SU2': return tuple(res), tuple(double_alpha + alpha_beta)
 
     double_beta = [(o, v) for o, v in product(combinations(beta_occ, 2), combinations(beta_vac, 2))]
     res += [reference ^ (1 << i[0]) ^ (1 << i[1]) ^ (1 << j[0]) ^ (1 << j[1]) for i, j in double_beta]
@@ -75,7 +83,7 @@ def _gen_double_site_hops(
     # beta_alpha = [(o, v) for o, v in product(product(beta_occ, alpha_occ), product(beta_vac, alpha_vac))]
     # res += [reference ^ (1 << i[0]) ^ (1 << i[1]) ^ (1 << j[0]) ^ (1 << j[1]) for i, j in beta_alpha]
 
-    return res, double_alpha + alpha_beta + double_beta 
+    return tuple(res), tuple(double_alpha + alpha_beta + double_beta)
 
 
 def _compute_fermionic_sign(
@@ -116,6 +124,56 @@ def _compute_fermionic_sign(
         raise ValueError('The referenced hop does not meet the target state')
     
     return sign
+
+
+def _assemble_2rdm_from_cache(
+    n: int,
+    bias_prob: Optional[float],
+    overlaps_n: dict,
+    overlaps_m: dict,
+    n_qubits: int,
+) -> np.ndarray:
+    """Assemble a 2-RDM estimator from pre-computed overlap dicts (no estimator calls)."""
+    gamma = np.zeros((n_qubits, n_qubits, n_qubits, n_qubits))
+
+    c_n = overlaps_n[n]
+    if np.abs(c_n) < 1e-15:
+        return gamma
+
+    w = (np.abs(c_n) ** 2) / bias_prob if bias_prob is not None else 1.0
+
+    double_hops, double_transitions = _gen_double_site_hops(n, n_qubits, symm_type='SZ')
+    single_hops, single_transitions = _gen_single_site_hops(n, n_qubits)
+
+    for m, t in zip(double_hops, double_transitions):
+        (i, j), (k, l) = t
+        c_m = overlaps_m[m]
+        gamma[i, j, l, k] = _compute_fermionic_sign(m, t) * (c_m / c_n) * w
+
+    for m, hop in zip(single_hops, single_transitions):
+        i, k = hop
+        occupied = [j for j in range(n_qubits) if (m >> j) & 1 and (n >> j) & 1]
+        c_m = overlaps_m[m]
+        for j in occupied:
+            t = ((i, j), (k, j))
+            gamma[i, j, j, k] = _compute_fermionic_sign(m, t) * (c_m / c_n) * w
+
+    occupied = [i for i in range(n_qubits) if (n >> i) & 1]
+    c_m = overlaps_m[n]
+    for i, j in combinations(occupied, 2):
+        gamma[i, j, i, j] = (c_m / c_n) * w
+
+    return gamma - gamma.transpose(1, 0, 2, 3) - gamma.transpose(0, 1, 3, 2) + gamma.transpose(1, 0, 3, 2)
+
+
+def _process_batch(args):
+    """Process a batch of MC samples using pre-computed overlaps. Runs in a worker process."""
+    samples, overlaps_n, overlaps_m, n_qubits = args
+    batch_mean = np.zeros((n_qubits, n_qubits, n_qubits, n_qubits))
+    for j, (det, prob) in enumerate(samples):
+        estimate = _assemble_2rdm_from_cache(det, prob, overlaps_n, overlaps_m, n_qubits)
+        batch_mean += (estimate - batch_mean) / (j + 1)
+    return batch_mean
 
 
 class AbstractStochasticSampler(ABC):
@@ -204,7 +262,13 @@ class MetropolisSampler(AbstractStochasticSampler):
 
 class MPSSampler(AbstractStochasticSampler):
 
-    def __init__(self, mf: Union[RHF, UHF], max_bond_dim: int = 200, batch_size: int = 1000):
+    def __init__(
+        self,
+        mf: Union[RHF, UHF],
+        max_bond_dim: int = 200,
+        batch_size: int = 1000,
+        prob_cutoff: Optional[float] = None,
+    ):
 
         if isinstance(mf, UHF):
             raise NotImplementedError()
@@ -212,6 +276,7 @@ class MPSSampler(AbstractStochasticSampler):
         self.norb = mf.mo_coeff.shape[1]
         nelec = mf.mol.nelectron
         self.batch_size = batch_size
+        self.prob_cutoff = prob_cutoff
 
         h1e = mf.mo_coeff.T @ mf.get_hcore() @ mf.mo_coeff
         eri = ao2mo.kernel(mf.mol, mf.mo_coeff)
@@ -234,9 +299,24 @@ class MPSSampler(AbstractStochasticSampler):
             iprint=0
         )
 
-        self._buffer_dets: List[int] = []
-        self._buffer_probs: List[float] = []
-        self._refill_buffer()
+        self._cat_dets: Optional[np.ndarray] = None
+        self._cat_probs: Optional[np.ndarray] = None
+
+        if prob_cutoff is not None:
+            dets, coeffs = self.driver.get_csf_coefficients(self.ket, cutoff=prob_cutoff, iprint=0)
+            int_dets = np.array([self._det_to_int(d) for d in dets])
+            probs = np.abs(coeffs) ** 2
+            probs /= probs.sum()
+            self._cat_dets = int_dets
+            self._cat_probs = probs
+            logger.info(
+                f"MPSSampler: prob_cutoff={prob_cutoff}, "
+                f"kept {len(int_dets)} determinants (truncated from full distribution)"
+            )
+        else:
+            self._buffer_dets: List[int] = []
+            self._buffer_probs: List[float] = []
+            self._refill_buffer()
 
     def _det_to_int(self, det: np.ndarray) -> int:
         norb = self.norb
@@ -261,6 +341,8 @@ class MPSSampler(AbstractStochasticSampler):
         Returns (dets, probs) arrays like the old implementation, using
         get_csf_coefficients with the given cutoff.
         """
+        if self._cat_dets is not None:
+            return self._cat_dets, self._cat_probs
         dets, coeffs = self.driver.get_csf_coefficients(
             self.ket, cutoff=cutoff, iprint=0
         )
@@ -269,6 +351,9 @@ class MPSSampler(AbstractStochasticSampler):
         return dets, probs
 
     def sample(self) -> tuple[int, float]:
+        if self._cat_dets is not None:
+            idx = np.random.choice(len(self._cat_dets), p=self._cat_probs)
+            return int(self._cat_dets[idx]), float(self._cat_probs[idx])
         if self._buffer_idx >= len(self._buffer_dets):
             self._refill_buffer()
         det = self._buffer_dets[self._buffer_idx]
@@ -322,29 +407,44 @@ class MonteCarloEstimator:
 
         w = (np.abs(c_n) ** 2) / bias_prob if bias_prob is not None else 1.0
 
+        # collect all unique m values needed
+        unique_m = set()
+
+        double_hops, double_transitions = _gen_double_site_hops(n, n_qubits, symm_type='SZ')
+        for m in double_hops:
+            unique_m.add(m)
+
+        single_hops, single_transitions = _gen_single_site_hops(n, n_qubits)
+        for m in single_hops:
+            unique_m.add(m)
+
+        unique_m.add(n)  # needed for density-density terms
+
+        # compute overlaps once per unique m
+        overlap_cache = {}
+        for m in unique_m:
+            overlap_cache[m] = estimator_m.estimate_overlap(m)
+
         # double hops
-        hops, transitions = _gen_double_site_hops(n, n_qubits, symm_type='SZ')
-        for m, t in zip(hops, transitions):
+        for m, t in zip(double_hops, double_transitions):
             (i, j), (k, l) = t
-            c_m = estimator_m.estimate_overlap(m)
+            c_m = overlap_cache[m]
             gamma[i, j, l, k] = _compute_fermionic_sign(m, t) * (c_m/c_n) * w
 
         # single hops
-        hops, transitions = _gen_single_site_hops(n, n_qubits)
-        for m, t in zip(hops, transitions):
-            i, k = t
+        for m, hop in zip(single_hops, single_transitions):
+            i, k = hop
             occupied = [j for j in range(n_qubits) if (m >> j) & 1 and (n >> j) & 1]
+            c_m = overlap_cache[m]
             for j in occupied:
                 t = ((i, j), (k, j))
-                c_m = estimator_m.estimate_overlap(m)
                 gamma[i, j, j, k] = _compute_fermionic_sign(m, t) * (c_m/c_n) * w
 
-
-        # get density-density terms
+        # density-density terms
         occupied = [i for i in range(n_qubits) if (n >> i) & 1]
-        c_m = estimator_m.estimate_overlap(n)
+        c_m = overlap_cache[n]
         for i, j in combinations(occupied, 2):
-            gamma[i, j, i, j] = (c_m/c_n) * w 
+            gamma[i, j, i, j] = (c_m/c_n) * w
 
         # antisymmetrise
         return gamma - gamma.transpose(1,0,2,3) - gamma.transpose(0,1,3,2) + gamma.transpose(1,0,3,2)
@@ -390,9 +490,108 @@ class MonteCarloEstimator:
             if callback is not None:
                 gamma = np.median(batch_means[:b + 1], axis=0)
                 global_iter = (b + 1) * batch_size - 1
-                callback(global_iter, gamma)
+                try:
+                    callback(global_iter, gamma)
+                except StopIteration:
+                    return gamma
 
         return np.median(batch_means, axis=0)
+
+    def _collect_unique_bitstrings(self, sampled_dets: list) -> set:
+        """Scan all sampled determinants and their hop targets, return all unique bitstrings."""
+        unique = set()
+        for det in sampled_dets:
+            unique.add(det)
+            single_hops, _ = _gen_single_site_hops(det, self.n_qubits)
+            for m in single_hops:
+                unique.add(m)
+            double_hops, _ = _gen_double_site_hops(det, self.n_qubits, symm_type='SZ')
+            for m in double_hops:
+                unique.add(m)
+        return unique
+
+    def estimate_2rdm_parallel(
+        self,
+        *,
+        max_iters: int = 10000,
+        n_batches: int = 100,
+        n_workers: int = 4,
+        callback: Optional[Callable[[int, np.ndarray], None]] = None,
+    ) -> np.ndarray:
+        """Parallel 2-RDM estimation using pre-computed overlaps and multiprocessing.
+
+        Phase 1: Pre-sample all determinants sequentially.
+        Phase 2: Pre-compute all unique overlaps sequentially (populates cache).
+        Phase 3: Distribute batches to worker processes for tensor assembly.
+        """
+        if max_iters % n_batches != 0:
+            raise ValueError("max_iters must be divisible by n_batches")
+
+        n_qubits = self.n_qubits
+        estimator_n, estimator_m = self.estimators
+        if estimator_m is None:
+            estimator_m = estimator_n
+
+        # Phase 1: Pre-sample all determinants
+        logger.info("Phase 1: Pre-sampling %d determinants", max_iters)
+        all_samples = [self.sampler.sample() for _ in range(max_iters)]
+
+        # Phase 2: Pre-compute all unique overlaps
+        # Enable intra-estimator parallelism (e.g. across K shadow estimators)
+        if hasattr(estimator_n, 'n_workers'):
+            estimator_n.n_workers = n_workers
+        if hasattr(estimator_m, 'n_workers'):
+            estimator_m.n_workers = n_workers
+
+        sampled_dets = [det for det, _ in all_samples]
+        unique_bs = self._collect_unique_bitstrings(sampled_dets)
+        logger.info("Phase 2: Computing overlaps for %d unique bitstrings", len(unique_bs))
+
+        overlaps_n = {}
+        overlaps_m = {}
+        for bs in unique_bs:
+            overlaps_n[bs] = estimator_n.estimate_overlap(bs)
+            overlaps_m[bs] = estimator_m.estimate_overlap(bs)
+
+        # Phase 3: Parallel tensor assembly
+        batch_size = max_iters // n_batches
+        chunks = [
+            all_samples[b * batch_size : (b + 1) * batch_size]
+            for b in range(n_batches)
+        ]
+
+        logger.info(
+            "Phase 3: Assembling %d batches (size %d) with %d workers",
+            n_batches, batch_size, n_workers,
+        )
+
+        batch_means_all = []
+
+        # Process in waves of n_workers to support callbacks between waves
+        wave_size = n_workers
+        for wave_start in range(0, n_batches, wave_size):
+            wave_end = min(wave_start + wave_size, n_batches)
+            wave_chunks = chunks[wave_start:wave_end]
+
+            worker_args = [
+                (chunk, overlaps_n, overlaps_m, n_qubits)
+                for chunk in wave_chunks
+            ]
+
+            with Pool(processes=min(n_workers, len(wave_chunks))) as pool:
+                wave_results = pool.map(_process_batch, worker_args)
+
+            batch_means_all.extend(wave_results)
+
+            if callback is not None:
+                gamma = np.median(np.array(batch_means_all), axis=0)
+                global_iter = wave_end * batch_size
+                try:
+                    callback(global_iter, gamma)
+                except StopIteration:
+                    return gamma
+
+        return np.median(np.array(batch_means_all), axis=0)
 
 
 if __name__ == "__main__":

@@ -123,6 +123,87 @@ def apply_stabilizer_to_state(
 
         return post_state, new_phase
 
+def apply_stabilizer_to_state_fast(
+    state: int,
+    pauli_types: np.ndarray,
+    sign: complex,
+    phase: complex,
+    n_qubits: int,
+) -> tuple[int, complex]:
+    """Apply a stabilizer (as numpy arrays) to a computational basis state.
+
+    Args:
+        state: Computational basis state as int (little-endian)
+        pauli_types: Array of shape (n_qubits,) uint8 with 0=I, 1=X, 2=Y, 3=Z
+        sign: Sign of the stabilizer
+        phase: Accumulated phase factor
+        n_qubits: Number of qubits
+
+    Returns:
+        Tuple of (new_state, new_phase)
+    """
+    post_state = state
+    new_phase = phase * sign
+
+    for n in range(n_qubits):
+        pauli = pauli_types[n]
+        bit = (post_state >> n) & 1
+
+        if pauli == 1:  # X
+            post_state ^= (1 << n)
+        elif pauli == 2:  # Y
+            post_state ^= (1 << n)
+            new_phase = new_phase * (1j) * (-1) ** bit
+        elif pauli == 3:  # Z
+            new_phase = new_phase * (-1) ** bit
+
+    return post_state, new_phase
+
+
+def gaussian_elimination_fast(
+    stab_x_bits: np.ndarray,
+    stab_pauli_types: np.ndarray,
+    stab_signs: np.ndarray,
+    ref_state: int,
+    target_state: int,
+    n_qubits: int,
+) -> complex:
+    """Fast version of gaussian_elimination using precomputed numpy arrays.
+
+    Args:
+        stab_x_bits: Array shape (n_stab, n_qubits) bool - X bits per stabilizer
+        stab_pauli_types: Array shape (n_stab, n_qubits) uint8 - Pauli type per qubit
+        stab_signs: Array shape (n_stab,) complex - sign per stabilizer
+        ref_state: Reference computational basis state as int (little-endian)
+        target_state: Target computational basis state as int (little-endian)
+        n_qubits: Number of qubits
+
+    Returns:
+        Complex phase factor for the overlap
+    """
+    phase = 1 + 0j
+    interm = ref_state
+    target = target_state
+    n_stab = stab_x_bits.shape[0]
+
+    for n in range(n_qubits):
+        if ((target >> n) & 1) != ((interm >> n) & 1):
+            for m in range(n_stab):
+                if not stab_x_bits[m, n]:
+                    continue
+                if n > 0 and np.any(stab_x_bits[m, :n]):
+                    continue
+                interm, phase = apply_stabilizer_to_state_fast(
+                    interm, stab_pauli_types[m], stab_signs[m], phase, n_qubits,
+                )
+                break
+
+        if ((target >> n) & 1) != ((interm >> n) & 1):
+            return 0j
+
+    return phase
+
+
 def compute_x_rank(canonical_stabilizers: List[stim.PauliString]) -> int:
     """Compute the X-rank given a set of canonical stabilizers."""
     x_rank = 0

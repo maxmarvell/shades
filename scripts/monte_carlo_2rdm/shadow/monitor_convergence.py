@@ -35,14 +35,16 @@ DEFAULT_OUTPUT_DIR = f"./results/rdm2_monitor/{datetime.now().strftime('%Y-%m-%d
 
 N_RUNS = 5
 N_MC_ITERS = 5000
-N_SHADOWS = 1000
+N_SHADOWS = 10000
 N_K_ESTIMATORS = 20
 N_MC_BATCHES = 50  # for median-of-means: 5000/50 = 100 iters per batch
 LOG_EVERY = 50     # for plain mean: log every 50 iters
 
-N_HYDROGEN = 6
+N_HYDROGEN = 8
 BOND_LENGTH = 1.5
 BASIS_SET = "sto-3g"
+MPS_BOND_DIM = 300
+MPS_PROB_CUTOFF = 1e-6
 
 
 def main():
@@ -83,7 +85,7 @@ def main():
     print(f"  Median-of-means: {N_MC_BATCHES} batches of {N_MC_ITERS // N_MC_BATCHES} iters")
     print(f"Runs: {N_RUNS}")
 
-    sampler = MPSSampler(mf)
+    sampler = MPSSampler(mf, max_bond_dim=MPS_BOND_DIM, prob_cutoff=MPS_PROB_CUTOFF)
 
     # --- Storage for plain mean ---
     n_checkpoints_mean = N_MC_ITERS // LOG_EVERY

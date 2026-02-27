@@ -39,10 +39,10 @@ DEFAULT_OUTPUT_DIR = f"./results/bond_dim_converged/{datetime.now().strftime('%Y
 N_RUNS = 10
 MAX_MC_ITERS = 100000
 CONV_WINDOW = 500      # check convergence over this many iterations
-CONV_THRESHOLD = 1e-5  # relative change in E2 over window
+CONV_THRESHOLD = 1e-6  # relative change in E2 over window
 CHECK_EVERY = 100      # how often to evaluate E2
 
-BOND_DIMS = [10, 25, 50, 100, 200]
+BOND_DIMS = [50, 100, 200, 300, 400, 500]
 
 N_HYDROGEN = 8
 BOND_LENGTH = 1.5

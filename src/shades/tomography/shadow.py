@@ -9,7 +9,7 @@ import time
 import logging
 from multiprocessing import Pool
 
-from shades.utils import bitstring_to_stabilizers, measurement_to_int, gaussian_elimination, compute_x_rank, canonicalize
+from shades.utils import bitstring_to_stabilizers, measurement_to_int, gaussian_elimination, gaussian_elimination_fast, compute_x_rank, canonicalize
 from shades.tomography.clifford import (
     CliffordChannel,
     CliffordSnapshot,
@@ -36,6 +36,11 @@ class _PrecomputedSnapshot:
     ref_state: int
     phase_0: complex
     n_qubits: int
+    # Precomputed numpy arrays for fast gaussian elimination
+    stab_x_bits: Optional[np.ndarray] = None      # (n_stab, n_qubits) bool
+    stab_z_bits: Optional[np.ndarray] = None      # (n_stab, n_qubits) bool
+    stab_signs: Optional[np.ndarray] = None       # (n_stab,) complex
+    stab_pauli_types: Optional[np.ndarray] = None  # (n_stab, n_qubits) uint8
 
 
 @dataclass
@@ -95,7 +100,33 @@ class ClassicalShadow:
             measurement = sim.measure_many(*range(self.n_qubits))
             ref_state = measurement_to_int(measurement)
 
-            phase_0 = gaussian_elimination(stabilizers, ref_state, vacuum, self.n_qubits)
+            n_stab = len(stabilizers)
+            nq = self.n_qubits
+            stab_x_bits = np.empty((n_stab, nq), dtype=bool)
+            stab_z_bits = np.empty((n_stab, nq), dtype=bool)
+            stab_signs = np.empty(n_stab, dtype=complex)
+            stab_pauli_types = np.empty((n_stab, nq), dtype=np.uint8)
+
+            for idx, s in enumerate(stabilizers):
+                x_arr, z_arr = s.to_numpy()
+                stab_x_bits[idx] = x_arr
+                stab_z_bits[idx] = z_arr
+                stab_signs[idx] = s.sign
+                for q in range(nq):
+                    x, z = x_arr[q], z_arr[q]
+                    if not x and not z:
+                        stab_pauli_types[idx, q] = 0  # I
+                    elif x and not z:
+                        stab_pauli_types[idx, q] = 1  # X
+                    elif x and z:
+                        stab_pauli_types[idx, q] = 2  # Y
+                    else:
+                        stab_pauli_types[idx, q] = 3  # Z
+
+            phase_0 = gaussian_elimination_fast(
+                stab_x_bits, stab_pauli_types, stab_signs,
+                ref_state, vacuum, nq,
+            )
 
             self._precomputed.append(_PrecomputedSnapshot(
                 stabilizers=stabilizers,
@@ -103,6 +134,10 @@ class ClassicalShadow:
                 ref_state=ref_state,
                 phase_0=phase_0,
                 n_qubits=self.n_qubits,
+                stab_x_bits=stab_x_bits,
+                stab_z_bits=stab_z_bits,
+                stab_signs=stab_signs,
+                stab_pauli_types=stab_pauli_types,
             ))
 
     def estimate_observable(self, observable: stim.PauliString) -> complex:
@@ -122,7 +157,10 @@ class ClassicalShadow:
         self._ensure_precomputed()
         overlaps = np.empty(len(self._precomputed))
         for i, pre in enumerate(self._precomputed):
-            phase_a = gaussian_elimination(pre.stabilizers, pre.ref_state, a, pre.n_qubits)
+            phase_a = gaussian_elimination_fast(
+                pre.stab_x_bits, pre.stab_pauli_types, pre.stab_signs,
+                pre.ref_state, a, pre.n_qubits,
+            )
             overlaps[i] = (pre.mag_squared * phase_a * pre.phase_0.conjugate()).real
 
         return 2 * (2**self.n_qubits + 1) * np.mean(overlaps)
