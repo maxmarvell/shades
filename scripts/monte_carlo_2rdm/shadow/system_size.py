@@ -38,6 +38,7 @@ N_SHADOWS = 10000
 N_K_ESTIMATORS = 20
 MPS_BOND_DIM = 300
 MPS_PROB_CUTOFF = None
+N_WORKERS = 4
 
 # Convergence checking
 CONV_WINDOW = 500      # check convergence over this many iterations
@@ -72,6 +73,7 @@ def main():
     print(f"MPS bond dimension: {MPS_BOND_DIM}")
     print(f"Convergence: rel change < {CONV_THRESHOLD} over window of {CONV_WINDOW} iters")
     print(f"Runs per system size: {N_RUNS}")
+    print(f"Parallel workers: {N_WORKERS}")
 
     # Store results per system size
     all_results = {}
@@ -130,6 +132,8 @@ def main():
         sampler = MPSSampler(mf, max_bond_dim=MPS_BOND_DIM, prob_cutoff=MPS_PROB_CUTOFF)
         shadow1 = ShadowEstimator(mf, fci_solver)
         shadow2 = ShadowEstimator(mf, fci_solver)
+        shadow1.n_workers = N_WORKERS
+        shadow2.n_workers = N_WORKERS
 
         for j in range(N_RUNS):
             print(f"  Run {j+1}/{N_RUNS}...", end=" ", flush=True)
@@ -227,6 +231,7 @@ def main():
         "n_shadow_samples": N_SHADOWS,
         "n_k_estimators": int(N_K_ESTIMATORS),
         "mps_bond_dim": int(MPS_BOND_DIM),
+        "n_workers": int(N_WORKERS),
         "conv_window": int(CONV_WINDOW),
         "conv_threshold": float(CONV_THRESHOLD),
         "check_every": int(CHECK_EVERY),
