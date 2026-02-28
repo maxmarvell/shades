@@ -1,6 +1,6 @@
 """Monte Carlo RDM2 System Size Scaling Analysis.
 
-Uses median-of-means estimation with convergence checking.
+Uses plain mean (n_batches=1) with convergence checking.
 """
 
 import numpy as np
@@ -27,22 +27,22 @@ logging.basicConfig(
     force=True,
 )
 
-RUN_COMMENT = "System size scaling with median-of-means and convergence checking."
+RUN_COMMENT = "System size scaling with plain mean and convergence checking."
 
 DEFAULT_OUTPUT_DIR = f"./results/rdm2_scaling/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}/"
 
 # Fixed parameters
-N_RUNS = 10
+N_RUNS = 20
 N_MC_ITERS = 100000
-N_SHADOWS = 5000
+N_SHADOWS = 10000
 N_K_ESTIMATORS = 20
-N_MC_BATCHES = 1000
 MPS_BOND_DIM = 300
-MPS_PROB_CUTOFF = 1e-6
+MPS_PROB_CUTOFF = None
 
 # Convergence checking
-CONV_WINDOW = 10       # number of batch checkpoints to compare over
-CONV_THRESHOLD = 1e-4  # relative change threshold
+CONV_WINDOW = 500      # check convergence over this many iterations
+CONV_THRESHOLD = 1e-6  # relative change in E2 over window
+CHECK_EVERY = 100      # how often to evaluate E2
 
 # System size sweep
 N_HYDROGEN = [4, 6, 8]
@@ -68,9 +68,9 @@ def main():
     print("=" * 70)
     print(f"System sizes (N_H): {N_HYDROGEN}")
     print(f"Shadow samples: {N_SHADOWS}")
-    print(f"MC iterations: {N_MC_ITERS} ({N_MC_BATCHES} batches of {N_MC_ITERS // N_MC_BATCHES})")
+    print(f"Max MC iterations: {N_MC_ITERS}")
     print(f"MPS bond dimension: {MPS_BOND_DIM}")
-    print(f"Convergence: rel change < {CONV_THRESHOLD} over {CONV_WINDOW} batches")
+    print(f"Convergence: rel change < {CONV_THRESHOLD} over window of {CONV_WINDOW} iters")
     print(f"Runs per system size: {N_RUNS}")
 
     # Store results per system size
@@ -140,31 +140,42 @@ def main():
 
             # Convergence tracking
             e2_history = []
+            final_E2 = [None]
             final_iter = [N_MC_ITERS]
+            n_checks = CONV_WINDOW // CHECK_EVERY
 
-            def on_batch(i, gamma, _e2h=e2_history, _fi=final_iter):
+            def on_iter(i, gamma):
+                if (i + 1) % CHECK_EVERY != 0:
+                    return
+
                 rdm2 = spinorb_to_spatial_chem(gamma, norb)
                 E2 = doubles_energy(rdm2, mf)
-                _e2h.append(E2)
+                e2_history.append(E2)
 
-                if len(_e2h) >= CONV_WINDOW:
-                    old_val = _e2h[-CONV_WINDOW]
-                    new_val = _e2h[-1]
+                if len(e2_history) >= n_checks:
+                    recent = e2_history[-n_checks:]
+                    old_val = recent[0]
+                    new_val = recent[-1]
                     if abs(old_val) > 1e-15:
                         rel_change = abs(new_val - old_val) / abs(old_val)
                     else:
                         rel_change = abs(new_val - old_val)
 
                     if rel_change < CONV_THRESHOLD:
-                        _fi[0] = i + 1
+                        final_E2[0] = new_val
+                        final_iter[0] = i + 1
                         raise StopIteration
 
             mc = MonteCarloEstimator(estimator, sampler)
             rdm2_mc = mc.estimate_2rdm(
                 max_iters=N_MC_ITERS,
-                n_batches=N_MC_BATCHES,
-                callback=on_batch,
+                n_batches=1,
+                callback=on_iter,
             )
+
+            if final_E2[0] is None:
+                rdm2_tmp = spinorb_to_spatial_chem(rdm2_mc, norb)
+                final_E2[0] = doubles_energy(rdm2_tmp, mf)
             rdm2 = spinorb_to_spatial_chem(rdm2_mc, norb)
 
             E_doubles = doubles_energy(rdm2, mf)
@@ -211,14 +222,14 @@ def main():
         "bond_length_angstrom": float(BOND_LENGTH),
         "basis_set": str(BASIS_SET),
         "n_runs": int(N_RUNS),
-        "n_hydrogen": np.asarray(N_HYDROGEN, dtype=np.int64),
+        "n_hydrogen": [int(x) for x in N_HYDROGEN],
         "n_mc_iters": N_MC_ITERS,
         "n_shadow_samples": N_SHADOWS,
         "n_k_estimators": int(N_K_ESTIMATORS),
-        "n_mc_batches": int(N_MC_BATCHES),
         "mps_bond_dim": int(MPS_BOND_DIM),
         "conv_window": int(CONV_WINDOW),
         "conv_threshold": float(CONV_THRESHOLD),
+        "check_every": int(CHECK_EVERY),
         "comments": RUN_COMMENT,
         "reference_data": {str(k): {kk: float(vv) for kk, vv in v.items()}
                           for k, v in reference_data.items()},

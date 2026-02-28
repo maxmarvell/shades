@@ -514,19 +514,19 @@ class MonteCarloEstimator:
         self,
         *,
         max_iters: int = 10000,
-        n_batches: int = 100,
+        n_batches: int = 1,
         n_workers: int = 4,
-        callback: Optional[Callable[[int, np.ndarray], None]] = None,
     ) -> np.ndarray:
         """Parallel 2-RDM estimation using pre-computed overlaps and multiprocessing.
 
         Phase 1: Pre-sample all determinants sequentially.
         Phase 2: Pre-compute all unique overlaps sequentially (populates cache).
-        Phase 3: Distribute batches to worker processes for tensor assembly.
-        """
-        if max_iters % n_batches != 0:
-            raise ValueError("max_iters must be divisible by n_batches")
+        Phase 3: Distribute work to worker processes for tensor assembly.
 
+        When n_batches<=1, samples are split into n_workers equal chunks and
+        results are combined as a plain mean. When n_batches>1, each batch is
+        a worker task and results are combined via median-of-means.
+        """
         n_qubits = self.n_qubits
         estimator_n, estimator_m = self.estimators
         if estimator_m is None:
@@ -554,44 +554,43 @@ class MonteCarloEstimator:
             overlaps_m[bs] = estimator_m.estimate_overlap(bs)
 
         # Phase 3: Parallel tensor assembly
-        batch_size = max_iters // n_batches
-        chunks = [
-            all_samples[b * batch_size : (b + 1) * batch_size]
-            for b in range(n_batches)
-        ]
-
-        logger.info(
-            "Phase 3: Assembling %d batches (size %d) with %d workers",
-            n_batches, batch_size, n_workers,
-        )
-
-        batch_means_all = []
-
-        # Process in waves of n_workers to support callbacks between waves
-        wave_size = n_workers
-        for wave_start in range(0, n_batches, wave_size):
-            wave_end = min(wave_start + wave_size, n_batches)
-            wave_chunks = chunks[wave_start:wave_end]
-
-            worker_args = [
-                (chunk, overlaps_n, overlaps_m, n_qubits)
-                for chunk in wave_chunks
+        if n_batches <= 1:
+            # Split samples into n_workers equal chunks for plain mean
+            chunk_size = max_iters // n_workers
+            remainder = max_iters % n_workers
+            chunks = []
+            start = 0
+            for w in range(n_workers):
+                end = start + chunk_size + (1 if w < remainder else 0)
+                chunks.append(all_samples[start:end])
+                start = end
+        else:
+            if max_iters % n_batches != 0:
+                raise ValueError("max_iters must be divisible by n_batches")
+            batch_size = max_iters // n_batches
+            chunks = [
+                all_samples[b * batch_size : (b + 1) * batch_size]
+                for b in range(n_batches)
             ]
 
-            with Pool(processes=min(n_workers, len(wave_chunks))) as pool:
-                wave_results = pool.map(_process_batch, worker_args)
+        n_tasks = len(chunks)
+        logger.info(
+            "Phase 3: Assembling %d tasks with %d workers",
+            n_tasks, n_workers,
+        )
 
-            batch_means_all.extend(wave_results)
+        worker_args = [
+            (chunk, overlaps_n, overlaps_m, n_qubits)
+            for chunk in chunks
+        ]
 
-            if callback is not None:
-                gamma = np.median(np.array(batch_means_all), axis=0)
-                global_iter = wave_end * batch_size
-                try:
-                    callback(global_iter, gamma)
-                except StopIteration:
-                    return gamma
+        with Pool(processes=min(n_workers, n_tasks)) as pool:
+            batch_means = pool.map(_process_batch, worker_args)
 
-        return np.median(np.array(batch_means_all), axis=0)
+        if n_batches <= 1:
+            return np.mean(batch_means, axis=0)
+        else:
+            return np.median(np.array(batch_means), axis=0)
 
 
 if __name__ == "__main__":
