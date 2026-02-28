@@ -1,6 +1,6 @@
 """Monte Carlo RDM2 System Size Scaling Analysis.
 
-Uses plain mean (n_batches=1) with convergence checking.
+Uses plain mean (n_batches=1) with parallel tensor assembly.
 """
 
 import numpy as np
@@ -27,23 +27,18 @@ logging.basicConfig(
     force=True,
 )
 
-RUN_COMMENT = "System size scaling with plain mean and convergence checking."
+RUN_COMMENT = "System size scaling with plain mean and parallel tensor assembly."
 
 DEFAULT_OUTPUT_DIR = f"./results/rdm2_scaling/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}/"
 
 # Fixed parameters
 N_RUNS = 20
-N_MC_ITERS = 100000
+N_MC_ITERS = 500000
 N_SHADOWS = 10000
 N_K_ESTIMATORS = 20
 MPS_BOND_DIM = 300
 MPS_PROB_CUTOFF = None
 N_WORKERS = 4
-
-# Convergence checking
-CONV_WINDOW = 500      # check convergence over this many iterations
-CONV_THRESHOLD = 1e-6  # relative change in E2 over window
-CHECK_EVERY = 100      # how often to evaluate E2
 
 # System size sweep
 N_HYDROGEN = [4, 6, 8]
@@ -69,11 +64,10 @@ def main():
     print("=" * 70)
     print(f"System sizes (N_H): {N_HYDROGEN}")
     print(f"Shadow samples: {N_SHADOWS}")
-    print(f"Max MC iterations: {N_MC_ITERS}")
+    print(f"MC iterations: {N_MC_ITERS}")
     print(f"MPS bond dimension: {MPS_BOND_DIM}")
-    print(f"Convergence: rel change < {CONV_THRESHOLD} over window of {CONV_WINDOW} iters")
-    print(f"Runs per system size: {N_RUNS}")
     print(f"Parallel workers: {N_WORKERS}")
+    print(f"Runs per system size: {N_RUNS}")
 
     # Store results per system size
     all_results = {}
@@ -126,14 +120,11 @@ def main():
             'rel_err_E2': np.empty(N_RUNS, dtype=np.float64),
             'rel_frob_rdm2': np.empty(N_RUNS, dtype=np.float64),
             'max_abs_rdm2': np.empty(N_RUNS, dtype=np.float64),
-            'converged_at': np.full(N_RUNS, N_MC_ITERS, dtype=int),
         }
 
         sampler = MPSSampler(mf, max_bond_dim=MPS_BOND_DIM, prob_cutoff=MPS_PROB_CUTOFF)
         shadow1 = ShadowEstimator(mf, fci_solver)
         shadow2 = ShadowEstimator(mf, fci_solver)
-        shadow1.n_workers = N_WORKERS
-        shadow2.n_workers = N_WORKERS
 
         for j in range(N_RUNS):
             print(f"  Run {j+1}/{N_RUNS}...", end=" ", flush=True)
@@ -142,44 +133,13 @@ def main():
             shadow2.sample(N_SHADOWS // 2, N_K_ESTIMATORS)
             estimator = (shadow1, shadow2)
 
-            # Convergence tracking
-            e2_history = []
-            final_E2 = [None]
-            final_iter = [N_MC_ITERS]
-            n_checks = CONV_WINDOW // CHECK_EVERY
-
-            def on_iter(i, gamma):
-                if (i + 1) % CHECK_EVERY != 0:
-                    return
-
-                rdm2 = spinorb_to_spatial_chem(gamma, norb)
-                E2 = doubles_energy(rdm2, mf)
-                e2_history.append(E2)
-
-                if len(e2_history) >= n_checks:
-                    recent = e2_history[-n_checks:]
-                    old_val = recent[0]
-                    new_val = recent[-1]
-                    if abs(old_val) > 1e-15:
-                        rel_change = abs(new_val - old_val) / abs(old_val)
-                    else:
-                        rel_change = abs(new_val - old_val)
-
-                    if rel_change < CONV_THRESHOLD:
-                        final_E2[0] = new_val
-                        final_iter[0] = i + 1
-                        raise StopIteration
-
             mc = MonteCarloEstimator(estimator, sampler)
-            rdm2_mc = mc.estimate_2rdm(
+            rdm2_mc = mc.estimate_2rdm_parallel(
                 max_iters=N_MC_ITERS,
                 n_batches=1,
-                callback=on_iter,
+                n_workers=N_WORKERS,
             )
 
-            if final_E2[0] is None:
-                rdm2_tmp = spinorb_to_spatial_chem(rdm2_mc, norb)
-                final_E2[0] = doubles_energy(rdm2_tmp, mf)
             rdm2 = spinorb_to_spatial_chem(rdm2_mc, norb)
 
             E_doubles = doubles_energy(rdm2, mf)
@@ -192,11 +152,9 @@ def main():
 
             E = total_energy_from_rdm12(rdm1, rdm2, mf)
 
-            conv_status = "converged" if final_iter[0] < N_MC_ITERS else "max iters"
             print(
                 f"E: {E:.6f}, E_doubles = {E_doubles:.6f}, "
-                f"rel_err = {rel_err:.4e}, ||dRDM2||_F = {rel_frob:.4e} "
-                f"({conv_status} @ {final_iter[0]})"
+                f"rel_err = {rel_err:.4e}, ||dRDM2||_F = {rel_frob:.4e}"
             )
 
             results['E_tot'][j] = E
@@ -204,7 +162,6 @@ def main():
             results['rel_err_E2'][j] = rel_err
             results['rel_frob_rdm2'][j] = rel_frob
             results['max_abs_rdm2'][j] = max_abs
-            results['converged_at'][j] = final_iter[0]
 
             shadow1.clear_sample()
             shadow2.clear_sample()
@@ -232,9 +189,6 @@ def main():
         "n_k_estimators": int(N_K_ESTIMATORS),
         "mps_bond_dim": int(MPS_BOND_DIM),
         "n_workers": int(N_WORKERS),
-        "conv_window": int(CONV_WINDOW),
-        "conv_threshold": float(CONV_THRESHOLD),
-        "check_every": int(CHECK_EVERY),
         "comments": RUN_COMMENT,
         "reference_data": {str(k): {kk: float(vv) for kk, vv in v.items()}
                           for k, v in reference_data.items()},
